@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="AppQuiz/AppQuiz.csproj" />
+  <Project Path="docker-compose.dcproj">
+    <Build />
+  </Project>
+</Solution>

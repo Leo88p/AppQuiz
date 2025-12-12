@@ -1,0 +1,30 @@
+﻿@using Microsoft.AspNetCore.Identity
+@inject SignInManager<IdentityUser> SignInManager
+@inject UserManager<IdentityUser> UserManager
+
+<ul class="navbar-nav">
+    @if (SignInManager.IsSignedIn(User))
+    {
+        <li class="nav-item">
+            <span class="nav-link text-dark">Здравствуйте, @User.Identity?.Name!</span>
+        </li>
+
+        @if (!ViewContext.RouteData.Values["page"].ToString().Contains("Quiz"))
+        {
+            <li class="nav-item">
+                <form class="form-inline" asp-page="/Logout" asp-route-returnUrl="@Url.Page("/", new { area = "" })" method="post">
+                    <button type="submit" class="nav-link btn btn-link text-dark">Выйти</button>
+                </form>
+            </li>
+        }
+    }
+    else
+    {
+        <li class="nav-item">
+            <a class="nav-link text-dark" asp-page="/Login">Войти</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link text-dark" asp-page="/Register">Регистрация</a>
+        </li>
+    }
+</ul>

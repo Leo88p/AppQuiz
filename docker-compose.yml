@@ -1,0 +1,30 @@
+version: '3.4'
+
+services:
+  appquiz:
+    image: ${DOCKER_REGISTRY-}appquiz
+    build:
+      context: .
+      dockerfile: AppQuiz/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=tcp:sqlserver,1433;Database=AppQuizDb;User ID=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+    depends_on:
+      - sqlserver
+    networks:
+      - quiz-network
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      SA_PASSWORD: "YourStrong@Passw0rd"
+      ACCEPT_EULA: "Y"
+    ports:
+      - "1433:1433"
+    networks:
+      - quiz-network
+
+networks:
+  quiz-network:
+    driver: bridge

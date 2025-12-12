@@ -1,0 +1,83 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Главная страница";
+}
+
+<div class="container mt-5">
+    <h1 class="text-center mb-4">Выберите викторину</h1>
+
+    @if (User.Identity?.IsAuthenticated != true)
+    {
+        <div class="alert alert-info text-center">
+            <p>Пожалуйста, <a asp-page="/Login" class="alert-link">войдите</a> или <a asp-page="/Register" class="alert-link">зарегистрируйтесь</a>, чтобы начать викторину.</p>
+        </div>
+    }
+
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <form method="post" class="p-4 border rounded bg-light" id="quizForm">
+                <div class="mb-3">
+                    <label class="form-label">Выберите тему:</label>
+                    <select asp-for="SelectedTopic" class="form-select" required id="topicSelect">
+                        <option value="">-- Выберите тему --</option>
+                        <option value="biology">Биология</option>
+                        <option value="geography">География</option>
+                        <option value="history">История</option>
+                        <option value="music">Музыкальная литература</option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Количество вопросов:</label>
+                    <select asp-for="QuestionCount" class="form-select" required id="countSelect">
+                        <option value="">-- Выберите количество --</option>
+                        <option value="5">5 вопросов</option>
+                        <option value="10">10 вопросов</option>
+                        <option value="15">15 вопросов</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100" asp-page-handler="StartQuiz" id="startButton" disabled>
+                    Начать викторину
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const topicSelect = document.getElementById('topicSelect');
+            const countSelect = document.getElementById('countSelect');
+            const startButton = document.getElementById('startButton');
+            const quizForm = document.getElementById('quizForm');
+
+            // Функция проверки условий для активации кнопки
+            function checkFormValidity() {
+                const isTopicSelected = topicSelect.value !== '';
+                const isCountSelected = countSelect.value !== '';
+                const isUserAuthenticated = @((User.Identity?.IsAuthenticated == true).ToString().ToLower());
+
+                // Активируем кнопку только если пользователь авторизован и выбраны все параметры
+                startButton.disabled = !(isUserAuthenticated && isTopicSelected && isCountSelected);
+            }
+
+            // Проверяем при загрузке страницы
+            checkFormValidity();
+
+            // Проверяем при изменении выбора
+            topicSelect.addEventListener('change', checkFormValidity);
+            countSelect.addEventListener('change', checkFormValidity);
+
+            // Добавляем обработчик отправки формы
+            quizForm.addEventListener('submit', function(e) {
+                if (startButton.disabled) {
+                    e.preventDefault();
+                    alert('Пожалуйста, выберите тему и количество вопросов');
+                }
+            });
+        });
+    </script>
+}
