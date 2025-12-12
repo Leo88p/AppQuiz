@@ -1,12 +1,13 @@
+using AppQuiz.Data;
+using AppQuiz.Models;
+using AppQuiz.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
-using AppQuiz.Data;
-using AppQuiz.Models;
+using Microsoft.Extensions.Logging;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
-using Microsoft.Extensions.Logging;
 
 namespace AppQuiz.Pages
 {
@@ -14,6 +15,7 @@ namespace AppQuiz.Pages
     {
         private readonly ApplicationDbContext _context;
         private readonly ILogger<QuizModel> _logger;
+        private readonly OllamaService _ollamaService;
 
         [BindProperty(SupportsGet = true)]
         public int CurrentQuestionIndex { get; set; } = 0;
@@ -36,12 +38,13 @@ namespace AppQuiz.Pages
         public int TotalQuestions { get; set; }
         public bool IsCorrect { get; set; }
         public string CorrectAnswer { get; set; } = string.Empty;
+        public double SimilarityScore { get; set; }
 
-        public QuizModel(ApplicationDbContext context, ILogger<QuizModel> logger)
+        public QuizModel(ApplicationDbContext context, ILogger<QuizModel> logger, OllamaService ollamaService)
         {
             _context = context;
             _logger = logger;
-            QuizQuestions = new List<Question>(); // Инициализация списка вопросов
+            _ollamaService = ollamaService;
         }
 
         private T GetFromTempData<T>(string key, T defaultValue)
@@ -175,7 +178,7 @@ namespace AppQuiz.Pages
             }
         }
 
-        public IActionResult OnPost()
+        public async Task<IActionResult> OnPost()
         {
             try
             {
@@ -216,24 +219,47 @@ namespace AppQuiz.Pages
                     return RedirectToPage("/Index");
                 }
 
-                // Проверка ответа пользователя
+                // Проверка ответа пользователя с использованием Ollama
                 var userAnswer = UserAnswer?.Trim() ?? string.Empty;
                 var correctAnswer = CurrentQuestion.Answer?.Trim() ?? string.Empty;
 
                 _logger.LogInformation($"Пользователь ответил: '{userAnswer}', правильный ответ: '{correctAnswer}'");
 
-                // Сравнение ответов без учета регистра
-                if (string.Equals(userAnswer, correctAnswer, StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    Score++;
-                    IsCorrect = true;
-                    _logger.LogInformation("Ответ правильный");
+                    // Проверяем ответ через Ollama с эмбеддингами
+                    IsCorrect = await _ollamaService.IsAnswerCorrectAsync(userAnswer, correctAnswer);
+
+                    if (IsCorrect)
+                    {
+                        Score++;
+                        _logger.LogInformation("Ответ правильный (проверено через Ollama)");
+                    }
+                    else
+                    {
+                        // Получаем сходство для отображения пользователю
+                        var userEmbedding = await _ollamaService.GetEmbeddingAsync(userAnswer);
+                        var correctEmbedding = await _ollamaService.GetEmbeddingAsync(correctAnswer);
+                        SimilarityScore = CalculateCosineSimilarity(userEmbedding, correctEmbedding);
+                        _logger.LogInformation($"Ответ неправильный. Сходство: {SimilarityScore:P2}");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    IsCorrect = false;
+                    _logger.LogWarning(ex, "Ошибка при работе с Ollama, используем традиционную проверку");
+                    // При ошибке Ollama используем традиционную проверку
+                    IsCorrect = string.Equals(userAnswer, correctAnswer, StringComparison.OrdinalIgnoreCase);
+
+                    if (IsCorrect)
+                    {
+                        Score++;
+                        _logger.LogInformation("Ответ правильный (традиционная проверка)");
+                    }
+                }
+
+                if (!IsCorrect)
+                {
                     CorrectAnswer = correctAnswer;
-                    _logger.LogInformation("Ответ неправильный");
                 }
 
                 // Устанавливаем флаг отображения результата
@@ -260,6 +286,28 @@ namespace AppQuiz.Pages
                 TempData["ErrorMessage"] = $"Произошла ошибка при обработке вашего ответа: {ex.Message}";
                 return RedirectToPage("/Error");
             }
+        }
+
+        private float CalculateCosineSimilarity(float[] vec1, float[] vec2)
+        {
+            if (vec1.Length != vec2.Length || vec1.Length == 0)
+                return 0f;
+
+            float dotProduct = 0f;
+            float norm1 = 0f;
+            float norm2 = 0f;
+
+            for (int i = 0; i < vec1.Length; i++)
+            {
+                dotProduct += vec1[i] * vec2[i];
+                norm1 += vec1[i] * vec1[i];
+                norm2 += vec2[i] * vec2[i];
+            }
+
+            if (norm1 == 0 || norm2 == 0)
+                return 0f;
+
+            return dotProduct / (float)(Math.Sqrt(norm1) * Math.Sqrt(norm2));
         }
 
         public IActionResult OnPostNextQuestion()

@@ -1,4 +1,4 @@
-version: '3.4'
+version: '3.8'
 
 services:
   appquiz:
@@ -10,8 +10,10 @@ services:
       - "8080:8080"
     environment:
       - ConnectionStrings__DefaultConnection=Server=tcp:sqlserver,1433;Database=AppQuizDb;User ID=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - OLLAMA_API_URL=http://ollama:11434
     depends_on:
       - sqlserver
+      - ollama
     networks:
       - quiz-network
 
@@ -20,11 +22,31 @@ services:
     environment:
       SA_PASSWORD: "YourStrong@Passw0rd"
       ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
     ports:
       - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
     networks:
       - quiz-network
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - quiz-network
+    deploy:
+      resources:
+        reservations:
+          memory: 2G
 
 networks:
   quiz-network:
     driver: bridge
+
+volumes:
+  mssql-data:
+  ollama-models:
