@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -96,6 +97,9 @@ using (var scope = app.Services.CreateScope())
         // Инициализация пользователей
         var userManager = services.GetRequiredService<UserManager<IdentityUser>>();
         await SeedUsers(userManager);
+
+        // Загрузка моделей Ollama перед запуском приложения
+        //await InitializeOllamaModels(services, builder.Configuration);
     }
     catch (Exception ex)
     {
@@ -108,10 +112,129 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-// Запускаем инициализацию модели Ollama в фоновом режиме
-_ = InitializeOllamaModel(app.Services);
-
 app.Run();
+
+// Метод для загрузки моделей Ollama
+static async Task InitializeOllamaModels(IServiceProvider services, IConfiguration configuration)
+{
+    var logger = services.GetRequiredService<ILogger<Program>>();
+    var httpClient = services.GetRequiredService<HttpClient>();
+
+    // Получаем URL Ollama из конфигурации
+    var ollamaUrl = configuration["OLLAMA_API_URL"] ?? "http://ollama:11434";
+    logger.LogInformation($"Используется Ollama URL: {ollamaUrl}");
+
+    // Модели, которые нужно загрузить
+    var modelsToPull = new[] { "nomic-embed-text", "all-minilm", "mxbai-embed-large", "phi3" };
+
+    // Увеличиваем таймаут для загрузки больших моделей
+    httpClient.Timeout = TimeSpan.FromMinutes(30);
+
+    foreach (var modelName in modelsToPull)
+    {
+        try
+        {
+            logger.LogInformation($"Начинаю загрузку модели: {modelName}");
+            Console.WriteLine($"Начинаю загрузку модели: {modelName}");
+
+            var pullRequest = new
+            {
+                name = modelName
+            };
+
+            var response = await httpClient.PostAsJsonAsync($"{ollamaUrl}/api/pull", pullRequest);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                logger.LogError($"Ошибка при загрузке модели {modelName}: {response.StatusCode}. Ответ: {errorContent}");
+                Console.WriteLine($"Ошибка при загрузке модели {modelName}: {response.StatusCode}");
+                Console.WriteLine($"Детали ошибки: {errorContent}");
+                continue;
+            }
+
+            // Постепенное чтение прогресса загрузки
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var reader = new StreamReader(stream);
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    try
+                    {
+                        var progress = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(line);
+
+                        if (progress.TryGetValue("status", out var status) &&
+                            progress.TryGetValue("completed", out var completed) &&
+                            progress.TryGetValue("total", out var total))
+                        {
+                            var completedBytes = completed.GetInt64();
+                            var totalBytes = total.GetInt64();
+                            var percent = totalBytes > 0 ? (double)completedBytes / totalBytes * 100 : 0;
+
+                            Console.Write($"\rЗагрузка {modelName}: {percent:F1}% - {status.GetString()}");
+                        }
+                        else if (progress.TryGetValue("status", out var finalStatus))
+                        {
+                            Console.WriteLine($"\n{modelName}: {finalStatus.GetString()}");
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        // Игнорируем ошибки парсинга, если строка не в формате JSON
+                        Console.WriteLine($"\n{line}");
+                    }
+                }
+            }
+
+            logger.LogInformation($"Модель {modelName} успешно загружена");
+            Console.WriteLine($"\nМодель {modelName} успешно загружена");
+
+            // Небольшая пауза между загрузками моделей
+            await Task.Delay(1000);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, $"Критическая ошибка при загрузке модели {modelName}: {ex.Message}");
+            Console.WriteLine($"Критическая ошибка при загрузке модели {modelName}: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+        }
+    }
+
+    // Проверяем, какие модели доступны после загрузки
+    try
+    {
+        logger.LogInformation("Проверка доступных моделей в Ollama...");
+        Console.WriteLine("Проверка доступных моделей в Ollama...");
+
+        var response = await httpClient.GetAsync($"{ollamaUrl}/api/tags");
+        if (response.IsSuccessStatusCode)
+        {
+            var modelsResponse = await response.Content.ReadFromJsonAsync<JsonDocument>();
+            var modelsArray = modelsResponse.RootElement.GetProperty("models");
+
+            Console.WriteLine("\nДоступные модели в Ollama:");
+            foreach (var model in modelsArray.EnumerateArray())
+            {
+                var name = model.GetProperty("name").GetString();
+                var size = model.GetProperty("size").GetInt64() / (1024 * 1024); // MB
+                Console.WriteLine($"- {name} ({size} MB)");
+            }
+        }
+        else
+        {
+            logger.LogWarning($"Не удалось получить список моделей: {response.StatusCode}");
+            Console.WriteLine($"Не удалось получить список моделей: {response.StatusCode}");
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, $"Ошибка при проверке доступных моделей: {ex.Message}");
+        Console.WriteLine($"Ошибка при проверке доступных моделей: {ex.Message}");
+    }
+}
 
 // Метод для создания начальных пользователей
 static async Task SeedUsers(UserManager<IdentityUser> userManager)
@@ -122,136 +245,5 @@ static async Task SeedUsers(UserManager<IdentityUser> userManager)
         var adminUser = new IdentityUser { UserName = "admin", Email = "admin@example.com" };
         await userManager.CreateAsync(adminUser, "Admin1234");
         Console.WriteLine("Администратор успешно создан.");
-    }
-}
-
-// Метод для инициализации модели Ollama
-// Метод для инициализации модели Ollama
-static async Task InitializeOllamaModel(IServiceProvider services)
-{
-    try
-    {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogInformation("Начинаем инициализацию модели Ollama...");
-
-        // Получаем конфигурацию
-        var configuration = services.GetRequiredService<IConfiguration>();
-        var ollamaUrl = configuration["OLLAMA_API_URL"] ?? "http://ollama:11434";
-        logger.LogInformation($"Попытка подключения к Ollama по адресу: {ollamaUrl}");
-
-        // Создаем отдельный scope для получения scoped-сервисов
-        using (var scope = services.CreateScope())
-        {
-            // Получаем сервисы внутри scope
-            var ollamaService = scope.ServiceProvider.GetRequiredService<OllamaService>();
-
-            // Проверяем доступность Ollama
-            using var httpClient = new HttpClient();
-            var response = await httpClient.GetAsync($"{ollamaUrl}/");
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogWarning($"Ollama недоступен. Код ответа: {response.StatusCode}");
-                return;
-            }
-
-            logger.LogInformation("Ollama сервер доступен");
-
-            // Проверяем, загружена ли уже модель
-            var modelsResponse = await httpClient.GetAsync($"{ollamaUrl}/api/tags");
-            if (modelsResponse.IsSuccessStatusCode)
-            {
-                var modelsContent = await modelsResponse.Content.ReadAsStringAsync();
-                var modelsJson = JsonDocument.Parse(modelsContent);
-
-                var hasModel = false;
-                if (modelsJson.RootElement.TryGetProperty("models", out var modelsArray) && modelsArray.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var model in modelsArray.EnumerateArray())
-                    {
-                        if (model.TryGetProperty("name", out var nameProperty) &&
-                            string.Equals(nameProperty.GetString(), "nomic-embed-text", StringComparison.OrdinalIgnoreCase))
-                        {
-                            hasModel = true;
-                            logger.LogInformation("Модель nomic-embed-text уже загружена в Ollama");
-                            break;
-                        }
-                    }
-                }
-
-                if (hasModel)
-                {
-                    // Проверяем работу модели простым запросом
-                    try
-                    {
-                        var testResult = await ollamaService.IsAnswerCorrectAsync("тест", "тест");
-                        logger.LogInformation("Модель работает корректно");
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Модель загружена, но возникла ошибка при проверке. Требуется повторная загрузка.");
-                    }
-                }
-            }
-
-            // Если модель не загружена, загружаем ее
-            logger.LogInformation("Загружаем модель nomic-embed-text в Ollama...");
-
-            var pullRequest = new
-            {
-                name = "nomic-embed-text"
-            };
-
-            var pullResponse = await httpClient.PostAsJsonAsync($"{ollamaUrl}/api/pull", pullRequest);
-
-            if (pullResponse.IsSuccessStatusCode)
-            {
-                // Читаем потоковый ответ от Ollama
-                using var streamReader = new StreamReader(await pullResponse.Content.ReadAsStreamAsync());
-                while (!streamReader.EndOfStream)
-                {
-                    var line = await streamReader.ReadLineAsync();
-                    if (!string.IsNullOrEmpty(line))
-                    {
-                        try
-                        {
-                            var status = JsonSerializer.Deserialize<Dictionary<string, object>>(line);
-                            if (status != null && status.TryGetValue("status", out var statusValue))
-                            {
-                                logger.LogInformation($"Загрузка модели: {statusValue}");
-                            }
-                        }
-                        catch
-                        {
-                            // Игнорируем ошибки разбора JSON
-                        }
-                    }
-                }
-
-                logger.LogInformation("Модель nomic-embed-text успешно загружена в Ollama");
-
-                // Проверяем работу модели
-                try
-                {
-                    var testResult = await ollamaService.IsAnswerCorrectAsync("тест", "тест");
-                    logger.LogInformation("Модель успешно проверена и готова к работе");
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Ошибка при проверке работы модели после загрузки");
-                }
-            }
-            else
-            {
-                logger.LogError($"Ошибка загрузки модели. Код ответа: {pullResponse.StatusCode}");
-                var errorContent = await pullResponse.Content.ReadAsStringAsync();
-                logger.LogError($"Тело ответа: {errorContent}");
-            }
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, $"Критическая ошибка при инициализации модели Ollama: {ex.Message}");
     }
 }

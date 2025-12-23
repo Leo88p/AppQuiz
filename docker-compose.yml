@@ -14,8 +14,6 @@ services:
     depends_on:
       - sqlserver
       - ollama
-    networks:
-      - quiz-network
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
@@ -27,8 +25,6 @@ services:
       - "1433:1433"
     volumes:
       - mssql-data:/var/opt/mssql
-    networks:
-      - quiz-network
 
   ollama:
     image: ollama/ollama
@@ -36,16 +32,6 @@ services:
       - "11434:11434"
     volumes:
       - ollama-models:/root/.ollama
-    networks:
-      - quiz-network
-    deploy:
-      resources:
-        reservations:
-          memory: 2G
-
-networks:
-  quiz-network:
-    driver: bridge
 
 volumes:
   mssql-data:

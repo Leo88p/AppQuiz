@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authentication;
+п»їusing Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -20,16 +20,16 @@ namespace AppQuiz.Pages
 
         public class InputModel
         {
-            [Required(ErrorMessage = "Логин обязателен")]
-            [Display(Name = "Логин")]
+            [Required(ErrorMessage = "Р›РѕРіРёРЅ РѕР±СЏР·Р°С‚РµР»РµРЅ")]
+            [Display(Name = "Р›РѕРіРёРЅ")]
             public string UserName { get; set; }
 
-            [Required(ErrorMessage = "Пароль обязателен")]
+            [Required(ErrorMessage = "РџР°СЂРѕР»СЊ РѕР±СЏР·Р°С‚РµР»РµРЅ")]
             [DataType(DataType.Password)]
-            [Display(Name = "Пароль")]
+            [Display(Name = "РџР°СЂРѕР»СЊ")]
             public string Password { get; set; }
 
-            [Display(Name = "Запомнить меня")]
+            [Display(Name = "Р—Р°РїРѕРјРЅРёС‚СЊ РјРµРЅСЏ")]
             public bool RememberMe { get; set; }
         }
 
@@ -50,7 +50,7 @@ namespace AppQuiz.Pages
                 }
                 else
                 {
-                    ModelState.AddModelError(string.Empty, "Неверный логин или пароль");
+                    ModelState.AddModelError(string.Empty, "РќРµРІРµСЂРЅС‹Р№ Р»РѕРіРёРЅ РёР»Рё РїР°СЂРѕР»СЊ");
                     return Page();
                 }
             }

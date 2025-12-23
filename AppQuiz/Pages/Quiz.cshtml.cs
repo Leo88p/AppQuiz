@@ -1,8 +1,9 @@
-using AppQuiz.Data;
+п»їusing AppQuiz.Data;
 using AppQuiz.Models;
 using AppQuiz.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System;
@@ -32,13 +33,29 @@ namespace AppQuiz.Pages
         [BindProperty(SupportsGet = true)]
         public bool IsComplete { get; set; } = false;
 
+        [BindProperty(SupportsGet = true)]
+        public string CorrectAnswer { get; set; } = string.Empty;
+
+        [BindProperty(SupportsGet = true)]
+        public double SimilarityScore { get; set; }
+
         public List<Question> QuizQuestions { get; set; } = new List<Question>();
         public Question CurrentQuestion { get; set; }
         public string TopicName { get; set; } = string.Empty;
         public int TotalQuestions { get; set; }
         public bool IsCorrect { get; set; }
-        public string CorrectAnswer { get; set; } = string.Empty;
-        public double SimilarityScore { get; set; }
+
+        [BindProperty]
+        public string SelectedEmbeddingModel { get; set; }
+
+        // РЎРїРёСЃРѕРє РґРѕСЃС‚СѓРїРЅС‹С… РјРѕРґРµР»РµР№ РґР»СЏ РІС‹Р±РѕСЂР°
+        public List<SelectListItem> AvailableEmbeddingModels { get; } = new List<SelectListItem>
+        {
+            new SelectListItem { Value = "nomic-embed-text", Text = "Nomic Embed Text" },
+            new SelectListItem { Value = "all-minilm", Text = "All MiniLM" },
+            new SelectListItem { Value = "mxbai-embed-large", Text = "MXBAI Embed Large" }
+        };
+
 
         public QuizModel(ApplicationDbContext context, ILogger<QuizModel> logger, OllamaService ollamaService)
         {
@@ -64,7 +81,7 @@ namespace AppQuiz.Pages
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, $"Ошибка при получении значения из TempData для ключа {key}");
+                _logger.LogWarning(ex, $"РћС€РёР±РєР° РїСЂРё РїРѕР»СѓС‡РµРЅРёРё Р·РЅР°С‡РµРЅРёСЏ РёР· TempData РґР»СЏ РєР»СЋС‡Р° {key}");
             }
 
             return defaultValue;
@@ -74,106 +91,126 @@ namespace AppQuiz.Pages
         {
             try
             {
-                _logger.LogInformation("Начало загрузки страницы Quiz");
+                _logger.LogInformation("РќР°С‡Р°Р»Рѕ Р·Р°РіСЂСѓР·РєРё СЃС‚СЂР°РЅРёС†С‹ Quiz");
 
-                // Проверка авторизации пользователя
+                // РџСЂРѕРІРµСЂРєР° Р°РІС‚РѕСЂРёР·Р°С†РёРё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
                 if (User.Identity?.IsAuthenticated != true)
                 {
-                    _logger.LogWarning("Пользователь не авторизован, перенаправление на страницу входа");
-                    TempData["ErrorMessage"] = "Пожалуйста, войдите в систему для прохождения викторины.";
+                    _logger.LogWarning("РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ Р°РІС‚РѕСЂРёР·РѕРІР°РЅ, РїРµСЂРµРЅР°РїСЂР°РІР»РµРЅРёРµ РЅР° СЃС‚СЂР°РЅРёС†Сѓ РІС…РѕРґР°");
+                    TempData["ErrorMessage"] = "РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІРѕР№РґРёС‚Рµ РІ СЃРёСЃС‚РµРјСѓ РґР»СЏ РїСЂРѕС…РѕР¶РґРµРЅРёСЏ РІРёРєС‚РѕСЂРёРЅС‹.";
                     return RedirectToPage("/Login");
                 }
 
-                // Если это начало викторины, формируем список вопросов
-                if (CurrentQuestionIndex == 0 && !IsComplete)
+                // РџРѕР»СѓС‡Р°РµРј РґР°РЅРЅС‹Рµ РёР· СЃРµСЃСЃРёРё - СЌС‚Рѕ РѕСЃРЅРѕРІРЅРѕР№ РёСЃС‚РѕС‡РЅРёРє РїСЂР°РІРґС‹
+                var quizQuestionsJson = HttpContext.Session.GetString("QuizQuestions");
+                var selectedTopic = HttpContext.Session.GetString("SelectedTopic");
+                var questionCountStr = HttpContext.Session.GetString("QuestionCount");
+                var savedScore = HttpContext.Session.GetInt32("Score");
+                var savedModel = HttpContext.Session.GetString("SelectedEmbeddingModel");
+                if (!string.IsNullOrEmpty(savedModel) && AvailableEmbeddingModels.Any(m => m.Value == savedModel))
                 {
-                    _logger.LogInformation("Начало новой викторины");
+                    SelectedEmbeddingModel = savedModel;
+                }
 
-                    // Получение данных из TempData
-                    var selectedTopic = GetFromTempData<string>("SelectedTopic", null);
-                    var questionCountStr = GetFromTempData<string>("QuestionCount", null);
-
-                    if (string.IsNullOrEmpty(selectedTopic) || string.IsNullOrEmpty(questionCountStr))
+                if (string.IsNullOrEmpty(quizQuestionsJson) || string.IsNullOrEmpty(selectedTopic) ||
+                    string.IsNullOrEmpty(questionCountStr) || !savedScore.HasValue)
+                {
+                    // Р•СЃР»Рё РґР°РЅРЅС‹С… РІ СЃРµСЃСЃРёРё РЅРµС‚, Рё СЌС‚Рѕ РЅР°С‡Р°Р»Рѕ РІРёРєС‚РѕСЂРёРЅС‹
+                    if (CurrentQuestionIndex == 0 && !IsComplete)
                     {
-                        _logger.LogWarning("Отсутствуют данные о выбранной теме или количестве вопросов");
-                        TempData["ErrorMessage"] = "Не удалось загрузить параметры викторины. Пожалуйста, выберите тему заново.";
+                        _logger.LogInformation("РќР°С‡Р°Р»Рѕ РЅРѕРІРѕР№ РІРёРєС‚РѕСЂРёРЅС‹");
+
+                        // РџРѕР»СѓС‡РµРЅРёРµ РґР°РЅРЅС‹С… РёР· TempData (С‚РѕР»СЊРєРѕ РґР»СЏ РЅР°С‡Р°Р»Р° РІРёРєС‚РѕСЂРёРЅС‹)
+                        selectedTopic = GetFromTempData<string>("SelectedTopic", null);
+                        questionCountStr = GetFromTempData<string>("QuestionCount", null);
+
+                        if (string.IsNullOrEmpty(selectedTopic) || string.IsNullOrEmpty(questionCountStr))
+                        {
+                            _logger.LogWarning("РћС‚СЃСѓС‚СЃС‚РІСѓСЋС‚ РґР°РЅРЅС‹Рµ Рѕ РІС‹Р±СЂР°РЅРЅРѕР№ С‚РµРјРµ РёР»Рё РєРѕР»РёС‡РµСЃС‚РІРµ РІРѕРїСЂРѕСЃРѕРІ");
+                            TempData["ErrorMessage"] = "РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ РїР°СЂР°РјРµС‚СЂС‹ РІРёРєС‚РѕСЂРёРЅС‹. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІС‹Р±РµСЂРёС‚Рµ С‚РµРјСѓ Р·Р°РЅРѕРІРѕ.";
+                            return RedirectToPage("/Index");
+                        }
+
+                        if (!int.TryParse(questionCountStr, out int questionCount))
+                        {
+                            _logger.LogError($"РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ Р·РЅР°С‡РµРЅРёРµ РєРѕР»РёС‡РµСЃС‚РІР° РІРѕРїСЂРѕСЃРѕРІ: {questionCountStr}");
+                            TempData["ErrorMessage"] = "РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РєРѕР»РёС‡РµСЃС‚РІРѕ РІРѕРїСЂРѕСЃРѕРІ. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РІС‹Р±РµСЂРёС‚Рµ С‚РµРјСѓ Р·Р°РЅРѕРІРѕ.";
+                            return RedirectToPage("/Index");
+                        }
+
+                        // Р—Р°РіСЂСѓР·РєР° РІРѕРїСЂРѕСЃРѕРІ РёР· Р±Р°Р·С‹ РґР°РЅРЅС‹С…
+                        var allQuestions = _context.Questions
+                            .Where(q => q.Topic == selectedTopic)
+                            .ToList();
+
+                        _logger.LogInformation($"РќР°Р№РґРµРЅРѕ РІРѕРїСЂРѕСЃРѕРІ РїРѕ С‚РµРјРµ {selectedTopic}: {allQuestions.Count}");
+
+                        if (allQuestions.Count < questionCount)
+                        {
+                            _logger.LogError($"РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РІРѕРїСЂРѕСЃРѕРІ РїРѕ С‚РµРјРµ {selectedTopic}. Р”РѕСЃС‚СѓРїРЅРѕ: {allQuestions.Count}, С‚СЂРµР±СѓРµС‚СЃСЏ: {questionCount}");
+                            TempData["ErrorMessage"] = $"РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РІРѕРїСЂРѕСЃРѕРІ РїРѕ С‚РµРјРµ {GetTopicName(selectedTopic)}. Р”РѕСЃС‚СѓРїРЅРѕ С‚РѕР»СЊРєРѕ {allQuestions.Count}.";
+                            return RedirectToPage("/Index");
+                        }
+
+                        // Р’С‹Р±РёСЂР°РµРј СЃР»СѓС‡Р°Р№РЅС‹Рµ РІРѕРїСЂРѕСЃС‹
+                        var random = new Random();
+                        QuizQuestions = allQuestions
+                            .OrderBy(q => random.Next())
+                            .Take(questionCount)
+                            .ToList();
+
+                        _logger.LogInformation($"РЎС„РѕСЂРјРёСЂРѕРІР°РЅ СЃРїРёСЃРѕРє РёР· {QuizQuestions.Count} СЃР»СѓС‡Р°Р№РЅС‹С… РІРѕРїСЂРѕСЃРѕРІ");
+
+                        // РЎРѕС…СЂР°РЅСЏРµРј РґР°РЅРЅС‹Рµ РІ СЃРµСЃСЃРёРё - СЌС‚Рѕ РєСЂРёС‚РёС‡РµСЃРєРё РІР°Р¶РЅРѕ
+                        HttpContext.Session.SetString("QuizQuestions", System.Text.Json.JsonSerializer.Serialize(QuizQuestions));
+                        HttpContext.Session.SetString("SelectedTopic", selectedTopic);
+                        HttpContext.Session.SetString("QuestionCount", questionCount.ToString());
+                        HttpContext.Session.SetInt32("Score", 0);
+                        Score = 0;
+                    }
+                    else
+                    {
+                        // Р•СЃР»Рё РґР°РЅРЅС‹С… РІ СЃРµСЃСЃРёРё РЅРµС‚, Рё СЌС‚Рѕ РЅРµ РЅР°С‡Р°Р»Рѕ РІРёРєС‚РѕСЂРёРЅС‹ - РґР°РЅРЅС‹Рµ СѓС‚РµСЂСЏРЅС‹
+                        _logger.LogWarning("Р”Р°РЅРЅС‹Рµ РІРёРєС‚РѕСЂРёРЅС‹ РЅРµ РЅР°Р№РґРµРЅС‹ РІ СЃРµСЃСЃРёРё");
+                        TempData["ErrorMessage"] = "Р’Р°С€Р° РІРёРєС‚РѕСЂРёРЅР° Р±С‹Р»Р° РїСЂРµСЂРІР°РЅР°. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
                         return RedirectToPage("/Index");
                     }
-
-                    if (!int.TryParse(questionCountStr, out int questionCount))
-                    {
-                        _logger.LogError($"Некорректное значение количества вопросов: {questionCountStr}");
-                        TempData["ErrorMessage"] = "Некорректное количество вопросов. Пожалуйста, выберите тему заново.";
-                        return RedirectToPage("/Index");
-                    }
-
-                    // Загрузка вопросов из базы данных
-                    var allQuestions = _context.Questions
-                        .Where(q => q.Topic == selectedTopic)
-                        .ToList();
-
-                    _logger.LogInformation($"Найдено вопросов по теме {selectedTopic}: {allQuestions.Count}");
-
-                    if (allQuestions.Count < questionCount)
-                    {
-                        _logger.LogError($"Недостаточно вопросов по теме {selectedTopic}. Доступно: {allQuestions.Count}, требуется: {questionCount}");
-                        TempData["ErrorMessage"] = $"Недостаточно вопросов по теме {GetTopicName(selectedTopic)}. Доступно только {allQuestions.Count}.";
-                        return RedirectToPage("/Index");
-                    }
-
-                    // Выбираем случайные вопросы
-                    var random = new Random();
-                    QuizQuestions = allQuestions
-                        .OrderBy(q => random.Next())
-                        .Take(questionCount)
-                        .ToList();
-
-                    _logger.LogInformation($"Сформирован список из {QuizQuestions.Count} случайных вопросов");
-
-                    // Сохраняем данные в сессии
-                    HttpContext.Session.SetString("QuizQuestions", System.Text.Json.JsonSerializer.Serialize(QuizQuestions));
-                    HttpContext.Session.SetString("SelectedTopic", selectedTopic);
-                    HttpContext.Session.SetString("QuestionCount", questionCount.ToString());
-                    HttpContext.Session.SetInt32("Score", 0);
                 }
                 else
                 {
-                    // Восстанавливаем данные из сессии
-                    var quizQuestionsJson = HttpContext.Session.GetString("QuizQuestions");
-                    if (string.IsNullOrEmpty(quizQuestionsJson))
-                    {
-                        _logger.LogWarning("Викторина не найдена в сессии");
-                        TempData["ErrorMessage"] = "Ваша викторина была прервана. Пожалуйста, начните заново.";
-                        return RedirectToPage("/Index");
-                    }
-
+                    // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РґР°РЅРЅС‹Рµ РёР· СЃРµСЃСЃРёРё
                     QuizQuestions = System.Text.Json.JsonSerializer.Deserialize<List<Question>>(quizQuestionsJson);
-                    var savedScore = HttpContext.Session.GetInt32("Score");
-                    Score = savedScore ?? 0;
+                    Score = savedScore.Value;
+                    TopicName = GetTopicName(selectedTopic);
                 }
 
-                if (IsComplete || CurrentQuestionIndex >= QuizQuestions.Count)
+                // РџСЂРѕРІРµСЂСЏРµРј, Р·Р°РІРµСЂС€РµРЅР° Р»Рё РІРёРєС‚РѕСЂРёРЅР°
+                if (IsComplete || CurrentQuestionIndex >= (QuizQuestions?.Count ?? 0))
                 {
-                    // Викторина завершена
+                    // Р’РёРєС‚РѕСЂРёРЅР° Р·Р°РІРµСЂС€РµРЅР°
                     IsComplete = true;
-                    TotalQuestions = QuizQuestions.Count;
-                    TopicName = GetTopicName(HttpContext.Session.GetString("SelectedTopic") ?? "unknown");
-                    _logger.LogInformation($"Викторина завершена. Счет: {Score} из {TotalQuestions}");
+                    TotalQuestions = QuizQuestions?.Count ?? 0;
+                    TopicName = GetTopicName(selectedTopic ?? "unknown");
+                    _logger.LogInformation($"Р’РёРєС‚РѕСЂРёРЅР° Р·Р°РІРµСЂС€РµРЅР°. РЎС‡РµС‚: {Score} РёР· {TotalQuestions}");
                     return Page();
                 }
 
-                // Устанавливаем текущий вопрос
-                CurrentQuestion = QuizQuestions[CurrentQuestionIndex];
-                TopicName = GetTopicName(HttpContext.Session.GetString("SelectedTopic") ?? "unknown");
-                TotalQuestions = QuizQuestions.Count;
+                // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј С‚РµРєСѓС‰РёР№ РІРѕРїСЂРѕСЃ
+                if (QuizQuestions != null && CurrentQuestionIndex < QuizQuestions.Count)
+                {
+                    CurrentQuestion = QuizQuestions[CurrentQuestionIndex];
+                }
 
-                _logger.LogInformation($"Загружен вопрос #{CurrentQuestionIndex + 1}: {CurrentQuestion?.Text?.Substring(0, Math.Min(50, CurrentQuestion?.Text?.Length ?? 0))}...");
+                TotalQuestions = QuizQuestions?.Count ?? 0;
+                TopicName = GetTopicName(selectedTopic ?? "unknown");
+
+                _logger.LogInformation($"Р—Р°РіСЂСѓР¶РµРЅ РІРѕРїСЂРѕСЃ #{CurrentQuestionIndex + 1}: {CurrentQuestion?.Text?.Substring(0, Math.Min(50, CurrentQuestion?.Text?.Length ?? 0))}...");
                 return Page();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Ошибка при загрузке страницы Quiz: {ex.Message}");
-                TempData["ErrorMessage"] = $"Произошла ошибка при загрузке викторины: {ex.Message}";
+                _logger.LogError(ex, $"РћС€РёР±РєР° РїСЂРё Р·Р°РіСЂСѓР·РєРµ СЃС‚СЂР°РЅРёС†С‹ Quiz: {ex.Message}");
+                TempData["ErrorMessage"] = $"РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР° РїСЂРё Р·Р°РіСЂСѓР·РєРµ РІРёРєС‚РѕСЂРёРЅС‹: {ex.Message}";
                 return RedirectToPage("/Error");
             }
         }
@@ -182,145 +219,149 @@ namespace AppQuiz.Pages
         {
             try
             {
-                _logger.LogInformation("Обработка POST-запроса на странице Quiz");
+                _logger.LogInformation("РћР±СЂР°Р±РѕС‚РєР° POST-Р·Р°РїСЂРѕСЃР° РЅР° СЃС‚СЂР°РЅРёС†Рµ Quiz");
 
-                // Проверка наличия вопросов в сессии
+                // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РґР°РЅРЅС‹Рµ РёР· СЃРµСЃСЃРёРё
                 var quizQuestionsJson = HttpContext.Session.GetString("QuizQuestions");
                 if (string.IsNullOrEmpty(quizQuestionsJson))
                 {
-                    _logger.LogError("Вопросы не найдены в сессии при POST-запросе");
-                    TempData["ErrorMessage"] = "Данные викторины утеряны. Пожалуйста, начните заново.";
+                    _logger.LogError("Р’РѕРїСЂРѕСЃС‹ РЅРµ РЅР°Р№РґРµРЅС‹ РІ СЃРµСЃСЃРёРё РїСЂРё POST-Р·Р°РїСЂРѕСЃРµ");
+                    TempData["ErrorMessage"] = "Р”Р°РЅРЅС‹Рµ РІРёРєС‚РѕСЂРёРЅС‹ СѓС‚РµСЂСЏРЅС‹. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
                     return RedirectToPage("/Index");
                 }
 
-                // Десериализация вопросов
                 QuizQuestions = System.Text.Json.JsonSerializer.Deserialize<List<Question>>(quizQuestionsJson);
                 if (QuizQuestions == null || QuizQuestions.Count == 0)
                 {
-                    _logger.LogError("Не удалось десериализовать вопросы из сессии или список пуст");
-                    TempData["ErrorMessage"] = "Ошибка загрузки вопросов. Пожалуйста, начните заново.";
+                    _logger.LogError("РќРµ СѓРґР°Р»РѕСЃСЊ РґРµСЃРµСЂРёР°Р»РёР·РѕРІР°С‚СЊ РІРѕРїСЂРѕСЃС‹ РёР· СЃРµСЃСЃРёРё РёР»Рё СЃРїРёСЃРѕРє РїСѓСЃС‚");
+                    TempData["ErrorMessage"] = "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РІРѕРїСЂРѕСЃРѕРІ. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
                     return RedirectToPage("/Index");
                 }
 
-                // Проверка текущего индекса вопроса
+                // РџСЂРѕРІРµСЂРєР° С‚РµРєСѓС‰РµРіРѕ РёРЅРґРµРєСЃР° РІРѕРїСЂРѕСЃР°
                 if (CurrentQuestionIndex < 0 || CurrentQuestionIndex >= QuizQuestions.Count)
                 {
-                    _logger.LogError($"Некорректный индекс вопроса: {CurrentQuestionIndex}, всего вопросов: {QuizQuestions.Count}");
-                    TempData["ErrorMessage"] = "Некорректный индекс вопроса. Пожалуйста, начните заново.";
+                    _logger.LogError($"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РёРЅРґРµРєСЃ РІРѕРїСЂРѕСЃР°: {CurrentQuestionIndex}, РІСЃРµРіРѕ РІРѕРїСЂРѕСЃРѕРІ: {QuizQuestions.Count}");
+                    TempData["ErrorMessage"] = "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ РёРЅРґРµРєСЃ РІРѕРїСЂРѕСЃР°. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
                     return RedirectToPage("/Index");
                 }
 
-                // Получение текущего вопроса с проверкой на null
+                // РџРѕР»СѓС‡Р°РµРј С‚РµРєСѓС‰РёР№ СЃС‡РµС‚ РёР· СЃРµСЃСЃРёРё
+                var savedScore = HttpContext.Session.GetInt32("Score") ?? 0;
+                Score = savedScore;
+
+                // РџРѕР»СѓС‡Р°РµРј С‚РµРєСѓС‰РёР№ РІРѕРїСЂРѕСЃ
                 CurrentQuestion = QuizQuestions[CurrentQuestionIndex];
                 if (CurrentQuestion == null)
                 {
-                    _logger.LogError($"Вопрос с индексом {CurrentQuestionIndex} равен null");
-                    TempData["ErrorMessage"] = "Вопрос не найден. Пожалуйста, начните заново.";
+                    _logger.LogError($"Р’РѕРїСЂРѕСЃ СЃ РёРЅРґРµРєСЃРѕРј {CurrentQuestionIndex} СЂР°РІРµРЅ null");
+                    TempData["ErrorMessage"] = "Р’РѕРїСЂРѕСЃ РЅРµ РЅР°Р№РґРµРЅ. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
                     return RedirectToPage("/Index");
                 }
 
-                // Проверка ответа пользователя с использованием Ollama
+                // РџСЂРѕРІРµСЂРєР° РѕС‚РІРµС‚Р° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
                 var userAnswer = UserAnswer?.Trim() ?? string.Empty;
                 var correctAnswer = CurrentQuestion.Answer?.Trim() ?? string.Empty;
 
-                _logger.LogInformation($"Пользователь ответил: '{userAnswer}', правильный ответ: '{correctAnswer}'");
+                _logger.LogInformation($"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РѕС‚РІРµС‚РёР»: '{userAnswer}', РїСЂР°РІРёР»СЊРЅС‹Р№ РѕС‚РІРµС‚: '{correctAnswer}'");
+                _logger.LogInformation($"Р’С‹Р±СЂР°РЅРЅР°СЏ РјРѕРґРµР»СЊ СЌРјР±РµРґРґРёРЅРіРѕРІ: {SelectedEmbeddingModel}");
 
                 try
                 {
-                    // Проверяем ответ через Ollama с эмбеддингами
-                    IsCorrect = await _ollamaService.IsAnswerCorrectAsync(userAnswer, correctAnswer);
+                    // РўРµРїРµСЂСЊ РІСЃРµРіРґР° РІС‹С‡РёСЃР»СЏРµРј СЃС…РѕРґСЃС‚РІРѕ, РЅРµР·Р°РІРёСЃРёРјРѕ РѕС‚ РїСЂР°РІРёР»СЊРЅРѕСЃС‚Рё РѕС‚РІРµС‚Р°
+                    SimilarityScore = await _ollamaService.GetAnswerSimilarityAsync(
+                        userAnswer,
+                        correctAnswer,
+                        SelectedEmbeddingModel
+                    );
+                    _logger.LogInformation($"РЎС…РѕРґСЃС‚РІРѕ РѕС‚РІРµС‚РѕРІ СЃ РјРѕРґРµР»СЊСЋ {SelectedEmbeddingModel}: {SimilarityScore:P2}");
 
-                    if (IsCorrect)
+                    // РћРїСЂРµРґРµР»СЏРµРј РїСЂР°РІРёР»СЊРЅРѕСЃС‚СЊ РЅР° РѕСЃРЅРѕРІРµ СЃС…РѕРґСЃС‚РІР° (РїРѕСЂРѕРі 0.75)
+                    IsCorrect = SimilarityScore >= 0.75;
+
+                    // РџСЂРѕРІРµСЂСЏРµРј, Р±С‹Р» Р»Рё СЌС‚РѕС‚ РІРѕРїСЂРѕСЃ СѓР¶Рµ РїСЂР°РІРёР»СЊРЅРѕ РѕС‚РІРµС‡РµРЅ
+                    var questionKey = $"Question_{CurrentQuestionIndex}_AnsweredCorrectly";
+                    var wasAlreadyCorrect = HttpContext.Session.GetInt32(questionKey) == 1;
+
+                    if (IsCorrect && !wasAlreadyCorrect)
                     {
                         Score++;
-                        _logger.LogInformation("Ответ правильный (проверено через Ollama)");
+                        HttpContext.Session.SetInt32(questionKey, 1); // РћС‚РјРµС‡Р°РµРј РІРѕРїСЂРѕСЃ РєР°Рє РїСЂР°РІРёР»СЊРЅРѕ РѕС‚РІРµС‡РµРЅРЅС‹Р№
+                        _logger.LogInformation($"РћС‚РІРµС‚ РїСЂР°РІРёР»СЊРЅС‹Р№ (СЃС…РѕРґСЃС‚РІРѕ {SimilarityScore:P2} РІС‹С€Рµ РїРѕСЂРѕРіР° 75%). РЎС‡РµС‚ СѓРІРµР»РёС‡РµРЅ РґРѕ {Score}.");
+                    }
+                    else if (IsCorrect && wasAlreadyCorrect)
+                    {
+                        _logger.LogInformation($"РћС‚РІРµС‚ РїСЂР°РІРёР»СЊРЅС‹Р№, РЅРѕ СѓР¶Рµ Р±С‹Р» Р·Р°СЃС‡РёС‚Р°РЅ СЂР°РЅРµРµ. РЎС‡РµС‚ РѕСЃС‚Р°Р»СЃСЏ {Score}.");
                     }
                     else
                     {
-                        // Получаем сходство для отображения пользователю
-                        var userEmbedding = await _ollamaService.GetEmbeddingAsync(userAnswer);
-                        var correctEmbedding = await _ollamaService.GetEmbeddingAsync(correctAnswer);
-                        SimilarityScore = CalculateCosineSimilarity(userEmbedding, correctEmbedding);
-                        _logger.LogInformation($"Ответ неправильный. Сходство: {SimilarityScore:P2}");
+                        _logger.LogInformation($"РћС‚РІРµС‚ РЅРµРїСЂР°РІРёР»СЊРЅС‹Р№ (СЃС…РѕРґСЃС‚РІРѕ {SimilarityScore:P2} РЅРёР¶Рµ РїРѕСЂРѕРіР° 75%). РЎС‡РµС‚ РѕСЃС‚Р°Р»СЃСЏ {Score}.");
                     }
+                    HttpContext.Session.SetString("SelectedEmbeddingModel", SelectedEmbeddingModel);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Ошибка при работе с Ollama, используем традиционную проверку");
-                    // При ошибке Ollama используем традиционную проверку
+                    _logger.LogWarning(ex, "РћС€РёР±РєР° РїСЂРё СЂР°Р±РѕС‚Рµ СЃ Ollama, РёСЃРїРѕР»СЊР·СѓРµРј С‚СЂР°РґРёС†РёРѕРЅРЅСѓСЋ РїСЂРѕРІРµСЂРєСѓ");
+                    // РџСЂРё РѕС€РёР±РєРµ Ollama РёСЃРїРѕР»СЊР·СѓРµРј С‚СЂР°РґРёС†РёРѕРЅРЅСѓСЋ РїСЂРѕРІРµСЂРєСѓ
                     IsCorrect = string.Equals(userAnswer, correctAnswer, StringComparison.OrdinalIgnoreCase);
+                    SimilarityScore = IsCorrect ? 1.0 : 0.0;
 
-                    if (IsCorrect)
+                    // РџСЂРѕРІРµСЂСЏРµРј, Р±С‹Р» Р»Рё СЌС‚РѕС‚ РІРѕРїСЂРѕСЃ СѓР¶Рµ РїСЂР°РІРёР»СЊРЅРѕ РѕС‚РІРµС‡РµРЅ
+                    var questionKey = $"Question_{CurrentQuestionIndex}_AnsweredCorrectly";
+                    var wasAlreadyCorrect = HttpContext.Session.GetInt32(questionKey) == 1;
+
+                    if (IsCorrect && !wasAlreadyCorrect)
                     {
                         Score++;
-                        _logger.LogInformation("Ответ правильный (традиционная проверка)");
+                        HttpContext.Session.SetInt32(questionKey, 1); // РћС‚РјРµС‡Р°РµРј РІРѕРїСЂРѕСЃ РєР°Рє РїСЂР°РІРёР»СЊРЅРѕ РѕС‚РІРµС‡РµРЅРЅС‹Р№
+                        _logger.LogInformation($"РћС‚РІРµС‚ РїСЂР°РІРёР»СЊРЅС‹Р№ (С‚СЂР°РґРёС†РёРѕРЅРЅР°СЏ РїСЂРѕРІРµСЂРєР°). РЎС‡РµС‚ СѓРІРµР»РёС‡РµРЅ РґРѕ {Score}.");
+                    }
+                    else if (IsCorrect && wasAlreadyCorrect)
+                    {
+                        _logger.LogInformation($"РћС‚РІРµС‚ РїСЂР°РІРёР»СЊРЅС‹Р№ (С‚СЂР°РґРёС†РёРѕРЅРЅР°СЏ РїСЂРѕРІРµСЂРєР°), РЅРѕ СѓР¶Рµ Р±С‹Р» Р·Р°СЃС‡РёС‚Р°РЅ СЂР°РЅРµРµ. РЎС‡РµС‚ РѕСЃС‚Р°Р»СЃСЏ {Score}.");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"РћС‚РІРµС‚ РЅРµРїСЂР°РІРёР»СЊРЅС‹Р№ (С‚СЂР°РґРёС†РёРѕРЅРЅР°СЏ РїСЂРѕРІРµСЂРєР°). РЎС‡РµС‚ РѕСЃС‚Р°Р»СЃСЏ {Score}.");
                     }
                 }
 
-                if (!IsCorrect)
-                {
-                    CorrectAnswer = correctAnswer;
-                }
+                // РЎРѕС…СЂР°РЅСЏРµРј РѕР±РЅРѕРІР»РµРЅРЅС‹Р№ СЃС‡РµС‚ РІ СЃРµСЃСЃРёРё
+                HttpContext.Session.SetInt32("Score", Score);
 
-                // Устанавливаем флаг отображения результата
-                ShowResult = true;
+                // Р’РЎР•Р“Р”Рђ СЃРѕС…СЂР°РЅСЏРµРј РїСЂР°РІРёР»СЊРЅС‹Р№ РѕС‚РІРµС‚ РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ
+                CorrectAnswer = correctAnswer;
 
-                // Получение темы из сессии с резервным вариантом
+                // РџРѕР»СѓС‡РµРЅРёРµ С‚РµРјС‹ РёР· СЃРµСЃСЃРёРё
                 var selectedTopic = HttpContext.Session.GetString("SelectedTopic") ?? "unknown";
-
-                // Устанавливаем информацию для отображения
                 TopicName = GetTopicName(selectedTopic);
                 TotalQuestions = QuizQuestions.Count;
 
-                // Сохраняем обновленные данные в сессию
-                HttpContext.Session.SetString("QuizQuestions", System.Text.Json.JsonSerializer.Serialize(QuizQuestions));
-                HttpContext.Session.SetInt32("Score", Score);
-                HttpContext.Session.SetString("SelectedTopic", selectedTopic);
+                // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј С„Р»Р°Рі РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ СЂРµР·СѓР»СЊС‚Р°С‚Р°
+                ShowResult = true;
 
-                _logger.LogInformation($"Текущий счет: {Score}, показываем результат: {ShowResult}");
+                _logger.LogInformation($"РўРµРєСѓС‰РёР№ СЃС‡РµС‚: {Score}, РїРѕРєР°Р·С‹РІР°РµРј СЂРµР·СѓР»СЊС‚Р°С‚: {ShowResult}");
                 return Page();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Критическая ошибка при обработке POST-запроса: {ex.Message}");
-                TempData["ErrorMessage"] = $"Произошла ошибка при обработке вашего ответа: {ex.Message}";
+                _logger.LogError(ex, $"РљСЂРёС‚РёС‡РµСЃРєР°СЏ РѕС€РёР±РєР° РїСЂРё РѕР±СЂР°Р±РѕС‚РєРµ POST-Р·Р°РїСЂРѕСЃР°: {ex.Message}");
+                TempData["ErrorMessage"] = $"РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР° РїСЂРё РѕР±СЂР°Р±РѕС‚РєРµ РІР°С€РµРіРѕ РѕС‚РІРµС‚Р°: {ex.Message}";
                 return RedirectToPage("/Error");
             }
-        }
-
-        private float CalculateCosineSimilarity(float[] vec1, float[] vec2)
-        {
-            if (vec1.Length != vec2.Length || vec1.Length == 0)
-                return 0f;
-
-            float dotProduct = 0f;
-            float norm1 = 0f;
-            float norm2 = 0f;
-
-            for (int i = 0; i < vec1.Length; i++)
-            {
-                dotProduct += vec1[i] * vec2[i];
-                norm1 += vec1[i] * vec1[i];
-                norm2 += vec2[i] * vec2[i];
-            }
-
-            if (norm1 == 0 || norm2 == 0)
-                return 0f;
-
-            return dotProduct / (float)(Math.Sqrt(norm1) * Math.Sqrt(norm2));
         }
 
         public IActionResult OnPostNextQuestion()
         {
             try
             {
-                _logger.LogInformation("Переход к следующему вопросу");
+                _logger.LogInformation("РџРµСЂРµС…РѕРґ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РІРѕРїСЂРѕСЃСѓ");
 
-                // Восстанавливаем данные из сессии
+                // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РґР°РЅРЅС‹Рµ РёР· СЃРµСЃСЃРёРё
                 var quizQuestionsJson = HttpContext.Session.GetString("QuizQuestions");
                 if (string.IsNullOrEmpty(quizQuestionsJson))
                 {
-                    _logger.LogError("Вопросы не найдены в сессии при переходе к следующему вопросу");
+                    _logger.LogError("Р’РѕРїСЂРѕСЃС‹ РЅРµ РЅР°Р№РґРµРЅС‹ РІ СЃРµСЃСЃРёРё РїСЂРё РїРµСЂРµС…РѕРґРµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РІРѕРїСЂРѕСЃСѓ");
                     return RedirectToPage("/Index");
                 }
 
@@ -332,13 +373,13 @@ namespace AppQuiz.Pages
                     Score = savedScore.Value;
                 }
 
-                // Восстанавливаем тему и количество вопросов из TempData или сессии
+                // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј С‚РµРјСѓ Рё РєРѕР»РёС‡РµСЃС‚РІРѕ РІРѕРїСЂРѕСЃРѕРІ РёР· TempData РёР»Рё СЃРµСЃСЃРёРё
                 var selectedTopic = TempData["SelectedTopic"]?.ToString() ?? HttpContext.Session.GetString("SelectedTopic");
                 var questionCount = TempData["QuestionCount"]?.ToString() ?? HttpContext.Session.GetString("QuestionCount");
 
                 if (string.IsNullOrEmpty(selectedTopic) || string.IsNullOrEmpty(questionCount))
                 {
-                    _logger.LogError("Отсутствуют данные о теме или количестве вопросов");
+                    _logger.LogError("РћС‚СЃСѓС‚СЃС‚РІСѓСЋС‚ РґР°РЅРЅС‹Рµ Рѕ С‚РµРјРµ РёР»Рё РєРѕР»РёС‡РµСЃС‚РІРµ РІРѕРїСЂРѕСЃРѕРІ");
                     return RedirectToPage("/Index");
                 }
 
@@ -347,18 +388,18 @@ namespace AppQuiz.Pages
                 if (CurrentQuestionIndex >= (QuizQuestions?.Count ?? 0))
                 {
                     IsComplete = true;
-                    _logger.LogInformation("Викторина завершена");
+                    _logger.LogInformation("Р’РёРєС‚РѕСЂРёРЅР° Р·Р°РІРµСЂС€РµРЅР°");
                     return RedirectToPage(new { currentQuestionIndex = CurrentQuestionIndex, score = Score, isComplete = true });
                 }
 
                 ShowResult = false;
 
-                // Сохраняем текущее состояние в сессии
+                // РЎРѕС…СЂР°РЅСЏРµРј С‚РµРєСѓС‰РµРµ СЃРѕСЃС‚РѕСЏРЅРёРµ РІ СЃРµСЃСЃРёРё
                 HttpContext.Session.SetString("SelectedTopic", selectedTopic);
                 HttpContext.Session.SetString("QuestionCount", questionCount);
                 HttpContext.Session.SetInt32("Score", Score);
 
-                // Важно: передаем все необходимые параметры для следующего запроса
+                // Р’Р°Р¶РЅРѕ: РїРµСЂРµРґР°РµРј РІСЃРµ РЅРµРѕР±С…РѕРґРёРјС‹Рµ РїР°СЂР°РјРµС‚СЂС‹ РґР»СЏ СЃР»РµРґСѓСЋС‰РµРіРѕ Р·Р°РїСЂРѕСЃР°
                 return RedirectToPage(new
                 {
                     currentQuestionIndex = CurrentQuestionIndex,
@@ -369,14 +410,14 @@ namespace AppQuiz.Pages
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Ошибка при переходе к следующему вопросу: {ex.Message}");
+                _logger.LogError(ex, $"РћС€РёР±РєР° РїСЂРё РїРµСЂРµС…РѕРґРµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РІРѕРїСЂРѕСЃСѓ: {ex.Message}");
                 return RedirectToPage("/Error");
             }
         }
 
         public IActionResult OnPostFinishQuiz()
         {
-            // Очищаем сессию после завершения викторины
+            // РћС‡РёС‰Р°РµРј СЃРµСЃСЃРёСЋ РїРѕСЃР»Рµ Р·Р°РІРµСЂС€РµРЅРёСЏ РІРёРєС‚РѕСЂРёРЅС‹
             HttpContext.Session.Remove("QuizQuestions");
             HttpContext.Session.Remove("Score");
 
@@ -387,12 +428,53 @@ namespace AppQuiz.Pages
         {
             return topicCode switch
             {
-                "biology" => "Биология",
-                "geography" => "География",
-                "history" => "История",
-                "music" => "Музыкальная литература",
-                _ => "Неизвестная тема"
+                "biology" => "Р‘РёРѕР»РѕРіРёСЏ",
+                "geography" => "Р“РµРѕРіСЂР°С„РёСЏ",
+                "history" => "РСЃС‚РѕСЂРёСЏ",
+                "music" => "РњСѓР·С‹РєР°Р»СЊРЅР°СЏ Р»РёС‚РµСЂР°С‚СѓСЂР°",
+                _ => "РќРµРёР·РІРµСЃС‚РЅР°СЏ С‚РµРјР°"
             };
+        }
+        public IActionResult OnPostRetryQuestion()
+        {
+            try
+            {
+                _logger.LogInformation($"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ С…РѕС‡РµС‚ РїРѕРІС‚РѕСЂРёС‚СЊ РІРѕРїСЂРѕСЃ #{CurrentQuestionIndex + 1}");
+
+                // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РґР°РЅРЅС‹Рµ РёР· СЃРµСЃСЃРёРё
+                var quizQuestionsJson = HttpContext.Session.GetString("QuizQuestions");
+                if (string.IsNullOrEmpty(quizQuestionsJson))
+                {
+                    _logger.LogError("Р’РѕРїСЂРѕСЃС‹ РЅРµ РЅР°Р№РґРµРЅС‹ РІ СЃРµСЃСЃРёРё РїСЂРё РїРѕРїС‹С‚РєРµ РїРѕРІС‚РѕСЂР° РІРѕРїСЂРѕСЃР°");
+                    TempData["ErrorMessage"] = "Р”Р°РЅРЅС‹Рµ РІРёРєС‚РѕСЂРёРЅС‹ СѓС‚РµСЂСЏРЅС‹. РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅР°С‡РЅРёС‚Рµ Р·Р°РЅРѕРІРѕ.";
+                    return RedirectToPage("/Index");
+                }
+
+                // Р’Р°Р¶РЅРѕ: СЃРѕС…СЂР°РЅСЏРµРј Р’РЎР• РЅРµРѕР±С…РѕРґРёРјС‹Рµ РґР°РЅРЅС‹Рµ РІ СЃРµСЃСЃРёСЋ РїРµСЂРµРґ РїРµСЂРµРЅР°РїСЂР°РІР»РµРЅРёРµРј
+                var selectedTopic = HttpContext.Session.GetString("SelectedTopic") ?? "unknown";
+                var questionCount = HttpContext.Session.GetString("QuestionCount") ?? "0";
+
+                // Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј С‚РµРєСѓС‰РёР№ СЃС‡РµС‚ РёР· СЃРµСЃСЃРёРё
+                var savedScore = HttpContext.Session.GetInt32("Score");
+                if (savedScore.HasValue)
+                {
+                    HttpContext.Session.SetInt32("Score", savedScore.Value);
+                }
+
+                // РџРµСЂРµРЅР°РїСЂР°РІР»СЏРµРј СЃ РїР°СЂР°РјРµС‚СЂР°РјРё, РЅРѕ РґР°РЅРЅС‹Рµ С…СЂР°РЅСЏС‚СЃСЏ РІ СЃРµСЃСЃРёРё
+                return RedirectToPage(new
+                {
+                    currentQuestionIndex = CurrentQuestionIndex,
+                    showResult = false,
+                    isComplete = false
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"РћС€РёР±РєР° РїСЂРё РїРѕРІС‚РѕСЂРµ РІРѕРїСЂРѕСЃР°: {ex.Message}");
+                TempData["ErrorMessage"] = $"РџСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР° РїСЂРё РїРѕРІС‚РѕСЂРµ РІРѕРїСЂРѕСЃР°: {ex.Message}";
+                return RedirectToPage("/Error");
+            }
         }
     }
 }

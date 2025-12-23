@@ -25,55 +25,56 @@ namespace AppQuiz.Services
             _logger.LogInformation($"Ollama сервис настроен на URL: {_httpClient.BaseAddress}");
         }
 
-        public async Task<bool> IsAnswerCorrectAsync(string userAnswer, string correctAnswer, double similarityThreshold = 0.75)
+        // Список доступных эмбеддинг-моделей
+        public static readonly List<string> AvailableEmbeddingModels = new List<string>
+        {
+            "nomic-embed-text",
+            "all-minilm",
+            "mxbai-embed-large"
+        };
+
+        public async Task<bool> IsAnswerCorrectAsync(string userAnswer, string correctAnswer, string embeddingModel, double similarityThreshold = 0.75)
         {
             try
             {
-                _logger.LogInformation($"Проверка ответа: '{userAnswer}' против '{correctAnswer}'");
+                _logger.LogInformation($"Проверка ответа с использованием модели {embeddingModel}: '{userAnswer}' против '{correctAnswer}'");
 
-                // Сначала проверяем простое совпадение (для точных совпадений)
-                if (string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogInformation("Точные совпадения ответов обнаружены");
-                    return true;
-                }
-
-                // Получаем эмбеддинги для обоих ответов
-                var userAnswerEmbedding = await GetEmbeddingAsync(userAnswer);
-                var correctAnswerEmbedding = await GetEmbeddingAsync(correctAnswer);
+                // Получаем эмбеддинги для обоих ответов с указанной моделью
+                var userAnswerEmbedding = await GetEmbeddingAsync(userAnswer, embeddingModel);
+                var correctAnswerEmbedding = await GetEmbeddingAsync(correctAnswer, embeddingModel);
 
                 if (userAnswerEmbedding == null || correctAnswerEmbedding == null ||
                     userAnswerEmbedding.Length == 0 || correctAnswerEmbedding.Length == 0)
                 {
-                    _logger.LogWarning("Получены пустые эмбеддинги. Используем резервную проверку.");
+                    _logger.LogWarning($"Получены пустые эмбеддинги при использовании модели {embeddingModel}. Используем резервную проверку.");
                     return string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase);
                 }
 
                 // Вычисляем косинусное сходство между эмбеддингами
                 var similarity = CalculateCosineSimilarity(userAnswerEmbedding, correctAnswerEmbedding);
-                _logger.LogInformation($"Сходство ответов: {similarity:P2}");
+                _logger.LogInformation($"Сходство ответов с моделью {embeddingModel}: {similarity:P2}");
 
                 // Если сходство выше порога, считаем ответ правильным
                 return similarity >= similarityThreshold;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Ошибка при проверке ответа через Ollama: {ex.Message}");
+                _logger.LogError(ex, $"Ошибка при проверке ответа через Ollama с моделью {embeddingModel}: {ex.Message}");
                 // В случае ошибки возвращаем традиционную проверку
                 return string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase);
             }
         }
 
-        public async Task<float[]> GetEmbeddingAsync(string text)
+        public async Task<float[]> GetEmbeddingAsync(string text, string model = "nomic-embed-text")
         {
             try
             {
-                _logger.LogDebug($"Запрос эмбеддинга для текста: '{text.Substring(0, Math.Min(50, text.Length))}...'");
+                _logger.LogDebug($"Запрос эмбеддинга для текста: '{text.Substring(0, Math.Min(50, text.Length))}...' с использованием модели: {model}");
 
                 // Правильный формат запроса для получения эмбеддингов в Ollama
                 var request = new
                 {
-                    model = "nomic-embed-text",
+                    model = model,
                     prompt = text,
                     options = new
                     {
@@ -81,13 +82,11 @@ namespace AppQuiz.Services
                     }
                 };
 
-                // Логируем запрос для отладки
                 var requestJson = JsonSerializer.Serialize(request);
                 _logger.LogDebug($"Отправка запроса к Ollama: {requestJson}");
 
                 var response = await _httpClient.PostAsJsonAsync("/api/embeddings", request);
 
-                // Логируем статус ответа
                 _logger.LogDebug($"Статус ответа от Ollama: {response.StatusCode}");
 
                 if (!response.IsSuccessStatusCode)
@@ -100,7 +99,6 @@ namespace AppQuiz.Services
                 var responseContent = await response.Content.ReadAsStringAsync();
                 _logger.LogDebug($"Ответ от Ollama: {responseContent.Substring(0, Math.Min(200, responseContent.Length))}...");
 
-                // Правильная десериализация ответа
                 var result = JsonSerializer.Deserialize<EmbeddingResponse>(responseContent);
 
                 if (result?.embedding == null || result.embedding.Length == 0)
@@ -109,13 +107,42 @@ namespace AppQuiz.Services
                     return Array.Empty<float>();
                 }
 
-                _logger.LogDebug($"Получен эмбеддинг размером: {result.embedding.Length}");
+                _logger.LogDebug($"Получен эмбеддинг размером: {result.embedding.Length} с использованием модели: {model}");
                 return result.embedding;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Ошибка при получении эмбеддинга: {ex.Message}");
+                _logger.LogError(ex, $"Ошибка при получении эмбеддинга с моделью {model}: {ex.Message}");
                 return Array.Empty<float>();
+            }
+        }
+
+        // Обновленный метод для получения сходства с выбором модели
+        public async Task<double> GetAnswerSimilarityAsync(string userAnswer, string correctAnswer, string embeddingModel = "nomic-embed-text")
+        {
+            try
+            {
+                _logger.LogInformation($"Вычисление сходства между ответами с использованием модели {embeddingModel}: '{userAnswer}' и '{correctAnswer}'");
+
+                var userAnswerEmbedding = await GetEmbeddingAsync(userAnswer, embeddingModel);
+                var correctAnswerEmbedding = await GetEmbeddingAsync(correctAnswer, embeddingModel);
+
+                if (userAnswerEmbedding == null || correctAnswerEmbedding == null ||
+                    userAnswerEmbedding.Length == 0 || correctAnswerEmbedding.Length == 0)
+                {
+                    _logger.LogWarning($"Получены пустые эмбеддинги при вычислении сходства с моделью {embeddingModel}");
+                    return 0.0;
+                }
+
+                var similarity = CalculateCosineSimilarity(userAnswerEmbedding, correctAnswerEmbedding);
+                _logger.LogInformation($"Рассчитанное сходство с моделью {embeddingModel}: {similarity:P2}");
+
+                return similarity;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Ошибка при вычислении сходства ответов с моделью {embeddingModel}: {ex.Message}");
+                return 0.0;
             }
         }
 

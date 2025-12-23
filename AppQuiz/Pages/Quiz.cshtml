@@ -70,7 +70,15 @@
                                     <div class="alert alert-success">
                                         <h4>Правильно!</h4>
                                         <p>Ваш ответ: @Model.UserAnswer</p>
-                                        <p class="text-muted">Система определила, что ваш ответ совпадает по смыслу с правильным.</p>
+                                        <p>Правильный ответ: @Model.CorrectAnswer</p>
+                                        <p>Модель эмбеддингов: <strong>@Model.SelectedEmbeddingModel</strong></p>
+                                        <div class="mt-3">
+                                            <p>Сходство ответов: <strong>@($"{Model.SimilarityScore * 100:0.0}")%</strong></p>
+                                            @if (Model.SimilarityScore < 1.0)
+                                            {
+                                                <p class="text-warning">Вы ответили правильно, но можно было быть точнее.</p>
+                                            }
+                                        </div>
                                     </div>
                                 }
                                 else
@@ -78,9 +86,10 @@
                                     <div class="alert alert-danger">
                                         <h4>Неправильно!</h4>
                                         <p>Ваш ответ: @Model.UserAnswer</p>
-                                        <p>Правильный ответ: @(Model.CorrectAnswer ?? "Ответ недоступен")</p>
+                                        <p>Правильный ответ: @Model.CorrectAnswer</p>
+                                        <p>Модель эмбеддингов: <strong>@Model.SelectedEmbeddingModel</strong></p>
                                         <div class="mt-3">
-                                            <p>Сходство ответов: <strong>@(Model.SimilarityScore * 100):0.0)%</strong></p>
+                                            <p>Сходство ответов: <strong>@($"{Model.SimilarityScore * 100:0.0}")%</strong></p>
                                             @if (Model.SimilarityScore >= 0.5)
                                             {
                                                 <p class="text-warning">Вы были близки! Попробуйте уточнить ваш ответ.</p>
@@ -89,27 +98,55 @@
                                     </div>
                                 }
                             </div>
-                            <form method="post" asp-page-handler="NextQuestion">
-                                <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
-                                <input type="hidden" name="Score" value="@Model.Score" />
-                                <input type="hidden" name="ShowResult" value="false" />
-                                <input type="hidden" name="IsComplete" value="false" />
-                                <button type="submit" class="btn btn-primary btn-lg">
-                                    @(Model.CurrentQuestionIndex + 1 < Model.TotalQuestions ? "Следующий вопрос" : "Завершить викторину")
-                                </button>
-                            </form>
+                            
+                            <!-- Добавляем кнопки для повтора вопроса или перехода к следующему -->
+                            <div class="d-flex justify-content-between mt-4">
+                                <form method="post" asp-page-handler="RetryQuestion">
+                                    <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
+                                    <input type="hidden" name="Score" value="@Model.Score" />
+                                    <input type="hidden" name="ShowResult" value="false" />
+                                    <input type="hidden" name="IsComplete" value="false" />
+                                    <button type="submit" class="btn btn-secondary btn-lg">Попробовать еще раз</button>
+                                </form>
+                                
+                                <form method="post" asp-page-handler="NextQuestion">
+                                    <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
+                                    <input type="hidden" name="Score" value="@Model.Score" />
+                                    <input type="hidden" name="ShowResult" value="false" />
+                                    <input type="hidden" name="IsComplete" value="false" />
+                                    <button type="submit" class="btn btn-primary btn-lg">
+                                        @(Model.CurrentQuestionIndex + 1 < Model.TotalQuestions ? "Следующий вопрос" : "Завершить викторину")
+                                    </button>
+                                </form>
+                            </div>
                         </div>
                     }
                     else
                     {
                         <!-- Текущий вопрос -->
-                        <div>
-                            <h3 class="mb-4">Вопрос @(Model.CurrentQuestionIndex + 1) из @Model.TotalQuestions</h3>
-                            <div class="mb-4">
-                                <p class="lead">@(Model.CurrentQuestion?.Text ?? "Вопрос недоступен")</p>
-                                <p class="text-muted small">Совет: Не беспокойтесь о точном совпадении формулировок. Система оценивает смысл вашего ответа.</p>
-                            </div>
-                            <form method="post">
+                        <form method="post">
+                            <div>
+                                <h3 class="mb-4">Вопрос @(Model.CurrentQuestionIndex + 1) из @Model.TotalQuestions</h3>
+                                <div class="mb-4">
+                                    <p class="lead">@(Model.CurrentQuestion?.Text ?? "Вопрос недоступен")</p>
+                                    <p class="text-muted small">Совет: Не беспокойтесь о точном совпадении формулировок. Система оценивает смысл вашего ответа.</p>
+                                
+                                    <!-- Выбор модели эмбеддингов -->
+                                    <div class="mt-3 p-3 bg-light rounded">
+                                        <label class="form-label fw-bold">Модель для анализа ответа:</label>
+                                        <select class="form-select" name="SelectedEmbeddingModel" id="embeddingModelSelect">
+                                            @foreach (var model in Model.AvailableEmbeddingModels)
+                                            {
+                                                <option value="@(model.Value)" selected="@(model.Value == Model.SelectedEmbeddingModel)">
+                                                    @(model.Text)
+                                                </option>
+                                            }
+                                        </select>
+                                        <p class="text-muted small mt-2 mb-0">
+                                            <small>Выберите модель для сравнения вашего ответа с правильным. Разные модели могут давать разные результаты.</small>
+                                        </p>
+                                    </div>
+                                </div>
                                 <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
                                 <input type="hidden" name="Score" value="@Model.Score" />
 
@@ -119,8 +156,8 @@
                                 </div>
 
                                 <button type="submit" class="btn btn-primary btn-lg w-100">Проверить ответ</button>
-                            </form>
-                        </div>
+                            </div>
+                        </form>
                     }
                 </div>
             </div>
@@ -143,6 +180,29 @@
                     if (e.key === 'Enter') {
                         this.form.submit();
                     }
+                });
+            }
+
+            // Обновляем описание модели при выборе
+            const modelSelect = document.getElementById('embeddingModelSelect');
+            if (modelSelect) {
+                modelSelect.addEventListener('change', function() {
+                    let description = '';
+                    switch(this.value) {
+                        case 'nomic-embed-text':
+                            description = 'Сбалансированная модель для текстовых эмбеддингов, хорошо подходит для большинства задач.';
+                            break;
+                        case 'all-minilm':
+                            description = 'Компактная и быстрая модель, хороша для простых сравнений текстов.';
+                            break;
+                        case 'mxbai-embed-large':
+                            description = 'Большая и точная модель, дает наилучшие результаты но работает медленнее.';
+                            break;
+                        default:
+                            description = 'Выберите модель для анализа вашего ответа.';
+                    }
+                    // Это просто для UX, не отправляет запрос на сервер
+                    console.log('Выбрана модель:', this.value);
                 });
             }
         });
