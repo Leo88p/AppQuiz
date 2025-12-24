@@ -104,8 +104,9 @@
                                 <form method="post" asp-page-handler="RetryQuestion">
                                     <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
                                     <input type="hidden" name="Score" value="@Model.Score" />
-                                    <input type="hidden" name="ShowResult" value="false" />
+                                    <input type="hidden" name="ShowResult" value="true" />
                                     <input type="hidden" name="IsComplete" value="false" />
+                                    <input type="hidden" name="SelectedEmbeddingModel" value="@Model.SelectedEmbeddingModel" />
                                     <button type="submit" class="btn btn-secondary btn-lg">Попробовать еще раз</button>
                                 </form>
                                 

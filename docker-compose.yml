@@ -9,30 +9,45 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - ConnectionStrings__DefaultConnection=Server=tcp:sqlserver,1433;Database=AppQuizDb;User ID=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=AppQuizDb;Username=postgres;Password=postgres
       - OLLAMA_API_URL=http://ollama:11434
     depends_on:
-      - sqlserver
+      - postgres
       - ollama
+    networks:
+      - app-network
 
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg18-trixie
     environment:
-      SA_PASSWORD: "YourStrong@Passw0rd"
-      ACCEPT_EULA: "Y"
-      MSSQL_PID: "Developer"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: AppQuizDb
+      PGDATA: /var/lib/postgresql/18/docker
     ports:
-      - "1433:1433"
+      - "5432:5432"
     volumes:
-      - mssql-data:/var/opt/mssql
+      - postgres:/var/lib/postgresql
+    networks:
+      - app-network
 
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:latest
     ports:
       - "11434:11434"
     volumes:
       - ollama-models:/root/.ollama
+    networks:
+      - app-network
+    environment:
+      - OLLAMA_NUM_GPU=100
+      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_GPU_LAYERS=50
 
 volumes:
-  mssql-data:
+  postgres:
   ollama-models:
+
+networks:
+  app-network:
+    driver: bridge

@@ -33,38 +33,6 @@ namespace AppQuiz.Services
             "mxbai-embed-large"
         };
 
-        public async Task<bool> IsAnswerCorrectAsync(string userAnswer, string correctAnswer, string embeddingModel, double similarityThreshold = 0.75)
-        {
-            try
-            {
-                _logger.LogInformation($"Проверка ответа с использованием модели {embeddingModel}: '{userAnswer}' против '{correctAnswer}'");
-
-                // Получаем эмбеддинги для обоих ответов с указанной моделью
-                var userAnswerEmbedding = await GetEmbeddingAsync(userAnswer, embeddingModel);
-                var correctAnswerEmbedding = await GetEmbeddingAsync(correctAnswer, embeddingModel);
-
-                if (userAnswerEmbedding == null || correctAnswerEmbedding == null ||
-                    userAnswerEmbedding.Length == 0 || correctAnswerEmbedding.Length == 0)
-                {
-                    _logger.LogWarning($"Получены пустые эмбеддинги при использовании модели {embeddingModel}. Используем резервную проверку.");
-                    return string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase);
-                }
-
-                // Вычисляем косинусное сходство между эмбеддингами
-                var similarity = CalculateCosineSimilarity(userAnswerEmbedding, correctAnswerEmbedding);
-                _logger.LogInformation($"Сходство ответов с моделью {embeddingModel}: {similarity:P2}");
-
-                // Если сходство выше порога, считаем ответ правильным
-                return similarity >= similarityThreshold;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Ошибка при проверке ответа через Ollama с моделью {embeddingModel}: {ex.Message}");
-                // В случае ошибки возвращаем традиционную проверку
-                return string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase);
-            }
-        }
-
         public async Task<float[]> GetEmbeddingAsync(string text, string model = "nomic-embed-text")
         {
             try
@@ -115,65 +83,6 @@ namespace AppQuiz.Services
                 _logger.LogError(ex, $"Ошибка при получении эмбеддинга с моделью {model}: {ex.Message}");
                 return Array.Empty<float>();
             }
-        }
-
-        // Обновленный метод для получения сходства с выбором модели
-        public async Task<double> GetAnswerSimilarityAsync(string userAnswer, string correctAnswer, string embeddingModel = "nomic-embed-text")
-        {
-            try
-            {
-                _logger.LogInformation($"Вычисление сходства между ответами с использованием модели {embeddingModel}: '{userAnswer}' и '{correctAnswer}'");
-
-                var userAnswerEmbedding = await GetEmbeddingAsync(userAnswer, embeddingModel);
-                var correctAnswerEmbedding = await GetEmbeddingAsync(correctAnswer, embeddingModel);
-
-                if (userAnswerEmbedding == null || correctAnswerEmbedding == null ||
-                    userAnswerEmbedding.Length == 0 || correctAnswerEmbedding.Length == 0)
-                {
-                    _logger.LogWarning($"Получены пустые эмбеддинги при вычислении сходства с моделью {embeddingModel}");
-                    return 0.0;
-                }
-
-                var similarity = CalculateCosineSimilarity(userAnswerEmbedding, correctAnswerEmbedding);
-                _logger.LogInformation($"Рассчитанное сходство с моделью {embeddingModel}: {similarity:P2}");
-
-                return similarity;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Ошибка при вычислении сходства ответов с моделью {embeddingModel}: {ex.Message}");
-                return 0.0;
-            }
-        }
-
-        private float CalculateCosineSimilarity(float[] vec1, float[] vec2)
-        {
-            if (vec1.Length != vec2.Length || vec1.Length == 0)
-            {
-                _logger.LogWarning($"Несовместимые векторы: vec1.Length={vec1.Length}, vec2.Length={vec2.Length}");
-                return 0f;
-            }
-
-            float dotProduct = 0f;
-            float norm1 = 0f;
-            float norm2 = 0f;
-
-            for (int i = 0; i < vec1.Length; i++)
-            {
-                dotProduct += vec1[i] * vec2[i];
-                norm1 += vec1[i] * vec1[i];
-                norm2 += vec2[i] * vec2[i];
-            }
-
-            if (norm1 == 0 || norm2 == 0)
-            {
-                _logger.LogWarning($"Нулевая норма: norm1={norm1}, norm2={norm2}");
-                return 0f;
-            }
-
-            var similarity = dotProduct / (float)(Math.Sqrt(norm1) * Math.Sqrt(norm2));
-            _logger.LogDebug($"Рассчитанное сходство: {similarity}");
-            return similarity;
         }
 
         private class EmbeddingResponse

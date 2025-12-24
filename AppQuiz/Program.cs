@@ -10,26 +10,28 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Pgvector;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Настройка строки подключения для Docker
+// Настройка строки подключения для PostgreSQL
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? "Server=sqlserver;Database=AppQuizDb;User ID=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True";
+    ?? "Host=postgres;Database=AppQuizDb;Username=postgres;Password=postgres";
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseNpgsql(connectionString, npgsqlOptions =>
+    {
+        npgsqlOptions.UseVector();
+    })
+    .EnableSensitiveDataLogging());
 
-// Настройка Identity с минимальными требованиями к паролю
+// Настройка Identity
 builder.Services.AddDefaultIdentity<IdentityUser>(options =>
 {
-    // Отключение требований к паролю кроме длины
     options.Password.RequireDigit = false;
     options.Password.RequireLowercase = false;
     options.Password.RequireNonAlphanumeric = false;
     options.Password.RequireUppercase = false;
     options.Password.RequiredLength = 4;
-
-    // Разрешить регистрацию без подтверждения email
     options.SignIn.RequireConfirmedAccount = false;
 })
 .AddEntityFrameworkStores<ApplicationDbContext>();
@@ -41,7 +43,7 @@ builder.Services.AddRazorPages()
         options.Conventions.ConfigureFilter(new IgnoreAntiforgeryTokenAttribute());
     });
 
-// Настройка TempData для сериализации сложных объектов
+// Настройка TempData
 builder.Services.AddControllersWithViews()
     .AddNewtonsoftJson();
 
@@ -67,7 +69,6 @@ if (!app.Environment.IsDevelopment())
 }
 else
 {
-    // Разрешить детальные ошибки в режиме разработки
     app.UseDeveloperExceptionPage();
     app.UseMigrationsEndPoint();
 }
@@ -77,42 +78,73 @@ app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseSession(); // Добавление middleware для сессий
+app.UseSession();
 app.MapRazorPages();
 
-// Инициализация базы данных
+// Инициализация базы данных с эмбеддингами
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
     try
     {
         var context = services.GetRequiredService<ApplicationDbContext>();
-
-        // Применить миграции
-        context.Database.Migrate();
-
-        // Инициализация вопросов
-        DbInitializer.Initialize(context);
-
-        // Инициализация пользователей
+        var ollamaService = services.GetRequiredService<OllamaService>();
         var userManager = services.GetRequiredService<UserManager<IdentityUser>>();
+
+        Console.WriteLine("Проверка подключения к базе данных...");
+        await context.Database.OpenConnectionAsync();
+        Console.WriteLine("Подключение к базе данных успешно установлено");
+        await context.Database.CloseConnectionAsync();
+
+        Console.WriteLine("Применение миграций...");
+        await context.Database.MigrateAsync();
+        Console.WriteLine("Миграции успешно применены");
+
+        // Проверка, что расширение vector существует
+        var extensionExists = await context.Database.ExecuteSqlRawAsync(@"
+            SELECT 1 FROM pg_extension WHERE extname = 'vector'
+        ") > 0;
+
+        Console.WriteLine($"Расширение vector {(extensionExists ? "существует" : "не существует")}");
+
+        Console.WriteLine("Инициализация данных...");
+        await DbInitializer.InitializeAsync(context, ollamaService);
         await SeedUsers(userManager);
 
-        // Загрузка моделей Ollama перед запуском приложения
-        //await InitializeOllamaModels(services, builder.Configuration);
+        Console.WriteLine("Инициализация базы данных успешно завершена");
     }
     catch (Exception ex)
     {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Произошла ошибка при инициализации базы данных.");
-
-        // Для разработки показываем детали ошибки в консоли
-        Console.WriteLine($"Ошибка инициализации БД: {ex.Message}");
+        Console.WriteLine($"ОШИБКА ПРИ ИНИЦИАЛИЗАЦИИ: {ex.Message}");
+        Console.WriteLine("STACK TRACE:");
         Console.WriteLine(ex.StackTrace);
+
+        var inner = ex.InnerException;
+        while (inner != null)
+        {
+            Console.WriteLine($"ВНУТРЕННЯЯ ОШИБКА: {inner.Message}");
+            inner = inner.InnerException;
+        }
+
+        // Для разработки не завершаем приложение
+        if (!app.Environment.IsDevelopment())
+        {
+            throw;
+        }
     }
 }
 
 app.Run();
+
+static async Task SeedUsers(UserManager<IdentityUser> userManager)
+{
+    if (await userManager.FindByNameAsync("admin") == null)
+    {
+        var adminUser = new IdentityUser { UserName = "admin", Email = "admin@example.com" };
+        await userManager.CreateAsync(adminUser, "Admin1234");
+        Console.WriteLine("Администратор успешно создан.");
+    }
+}
 
 // Метод для загрузки моделей Ollama
 static async Task InitializeOllamaModels(IServiceProvider services, IConfiguration configuration)
@@ -233,17 +265,5 @@ static async Task InitializeOllamaModels(IServiceProvider services, IConfigurati
     {
         logger.LogError(ex, $"Ошибка при проверке доступных моделей: {ex.Message}");
         Console.WriteLine($"Ошибка при проверке доступных моделей: {ex.Message}");
-    }
-}
-
-// Метод для создания начальных пользователей
-static async Task SeedUsers(UserManager<IdentityUser> userManager)
-{
-    // Создание администратора, если его нет
-    if (await userManager.FindByNameAsync("admin") == null)
-    {
-        var adminUser = new IdentityUser { UserName = "admin", Email = "admin@example.com" };
-        await userManager.CreateAsync(adminUser, "Admin1234");
-        Console.WriteLine("Администратор успешно создан.");
     }
 }

@@ -1,42 +1,103 @@
 ﻿using AppQuiz.Data;
 using AppQuiz.Models;
+using AppQuiz.Services;
 using Microsoft.EntityFrameworkCore;
+using Pgvector;
 
 namespace AppQuiz.Data
 {
     public static class DbInitializer
     {
-        public static void Initialize(ApplicationDbContext context)
+        public static async Task InitializeAsync(ApplicationDbContext context, OllamaService ollamaService)
         {
-            // Применяем миграции (если еще не применены)
-            //context.Database.Migrate();
+            await context.Database.MigrateAsync();
 
-            // Если вопросы уже есть в базе, ничего не делаем
-            if (context.Questions.Any())
+            // Если вопросы уже есть и у них есть эмбеддинги хотя бы для одной модели, ничего не делаем
+            if (context.Questions.Any() && context.Questions.Any(q =>
+                q.NomicEmbedTextEmbedding != null ||
+                q.AllMiniLMEmbedding != null ||
+                q.MxbaiEmbedLargeEmbedding != null))
             {
+                Console.WriteLine("Вопросы с эмбеддингами уже существуют в базе данных.");
                 return;
             }
 
-            // Добавляем вопросы
+            Console.WriteLine("Генерация вопросов и эмбеддингов...");
+
+            // Очищаем существующие вопросы
+            context.Questions.RemoveRange(context.Questions);
+            await context.SaveChangesAsync();
+
             var questions = GenerateQuestions();
-            context.Questions.AddRange(questions);
-            context.SaveChanges();
+            var questionsWithEmbeddings = new List<Question>();
+            int processedCount = 0;
+
+            foreach (var question in questions)
+            {
+                try
+                {
+                    Console.WriteLine($"Обработка вопроса {++processedCount}/{questions.Count}: {question.Text.Substring(0, Math.Min(50, question.Text.Length))}...");
+
+                    var answer = question.Answer.Trim();
+
+                    // nomic-embed-text (768 dimensions)
+                    var nomicEmbedding = await ollamaService.GetEmbeddingAsync(answer, "nomic-embed-text");
+                    if (nomicEmbedding.Length > 0 && nomicEmbedding.Length == 768)
+                    {
+                        question.NomicEmbedTextEmbedding = new Vector(nomicEmbedding);
+                    }
+
+                    // all-minilm (384 dimensions)
+                    var allMiniLMEmbedding = await ollamaService.GetEmbeddingAsync(answer, "all-minilm");
+                    if (allMiniLMEmbedding.Length > 0 && allMiniLMEmbedding.Length == 384)
+                    {
+                        question.AllMiniLMEmbedding = new Vector(allMiniLMEmbedding);
+                    }
+
+                    // mxbai-embed-large (1024 dimensions)
+                    var mxbaiEmbedding = await ollamaService.GetEmbeddingAsync(answer, "mxbai-embed-large");
+                    if (mxbaiEmbedding.Length > 0 && mxbaiEmbedding.Length == 1024)
+                    {
+                        question.MxbaiEmbedLargeEmbedding = new Vector(mxbaiEmbedding);
+                    }
+
+                    question.EmbeddingsGeneratedAt = DateTime.UtcNow;
+                    question.GeneratedEmbeddingModels = "nomic-embed-text,all-minilm,mxbai-embed-large";
+
+                    questionsWithEmbeddings.Add(question);
+
+                    await Task.Delay(100);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка при генерации эмбеддингов для вопроса '{question.Text}': {ex.Message}");
+                    // Добавляем вопрос без эмбеддингов
+                    questionsWithEmbeddings.Add(question);
+                }
+            }
+
+            await context.Questions.AddRangeAsync(questionsWithEmbeddings);
+            await context.SaveChangesAsync();
+
+            Console.WriteLine($"Успешно добавлено {questionsWithEmbeddings.Count} вопросов.");
+
+            // Проверяем, сколько вопросов имеют эмбеддинги
+            var questionsWithNomic = questionsWithEmbeddings.Count(q => q.NomicEmbedTextEmbedding != null);
+            var questionsWithAllMiniLM = questionsWithEmbeddings.Count(q => q.AllMiniLMEmbedding != null);
+            var questionsWithMxbai = questionsWithEmbeddings.Count(q => q.MxbaiEmbedLargeEmbedding != null);
+
+            Console.WriteLine($"Вопросов с nomic-embed-text эмбеддингами: {questionsWithNomic}");
+            Console.WriteLine($"Вопросов с all-minilm эмбеддингами: {questionsWithAllMiniLM}");
+            Console.WriteLine($"Вопросов с mxbai-embed-large эмбеддингами: {questionsWithMxbai}");
         }
 
         private static List<Question> GenerateQuestions()
         {
             var questions = new List<Question>();
 
-            // 15 вопросов по биологии
             questions.AddRange(GetBiologyQuestions());
-
-            // 15 вопросов по географии
             questions.AddRange(GetGeographyQuestions());
-
-            // 15 вопросов по истории
             questions.AddRange(GetHistoryQuestions());
-
-            // 15 вопросов по музыкальной литературе
             questions.AddRange(GetMusicQuestions());
 
             return questions;
