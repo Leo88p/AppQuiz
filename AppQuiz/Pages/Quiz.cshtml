@@ -72,6 +72,7 @@
                                         <p>Ваш ответ: @Model.UserAnswer</p>
                                         <p>Правильный ответ: @Model.CorrectAnswer</p>
                                         <p>Модель эмбеддингов: <strong>@Model.SelectedEmbeddingModel</strong></p>
+                                        <p>Функция расстояния: <strong>@Model.SelectedDistanceFunction</strong></p>
                                         <div class="mt-3">
                                             <p>Сходство ответов: <strong>@($"{Model.SimilarityScore * 100:0.0}")%</strong></p>
                                             @if (Model.SimilarityScore < 1.0)
@@ -88,6 +89,7 @@
                                         <p>Ваш ответ: @Model.UserAnswer</p>
                                         <p>Правильный ответ: @Model.CorrectAnswer</p>
                                         <p>Модель эмбеддингов: <strong>@Model.SelectedEmbeddingModel</strong></p>
+                                        <p>Функция расстояния: <strong>@Model.SelectedDistanceFunction</strong></p>
                                         <div class="mt-3">
                                             <p>Сходство ответов: <strong>@($"{Model.SimilarityScore * 100:0.0}")%</strong></p>
                                             @if (Model.SimilarityScore >= 0.5)
@@ -104,9 +106,10 @@
                                 <form method="post" asp-page-handler="RetryQuestion">
                                     <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
                                     <input type="hidden" name="Score" value="@Model.Score" />
-                                    <input type="hidden" name="ShowResult" value="true" />
+                                    <input type="hidden" name="ShowResult" value="false" />
                                     <input type="hidden" name="IsComplete" value="false" />
                                     <input type="hidden" name="SelectedEmbeddingModel" value="@Model.SelectedEmbeddingModel" />
+                                    <input type="hidden" name="SelectedDistanceFunction" value="@Model.SelectedDistanceFunction" />
                                     <button type="submit" class="btn btn-secondary btn-lg">Попробовать еще раз</button>
                                 </form>
                                 
@@ -115,6 +118,8 @@
                                     <input type="hidden" name="Score" value="@Model.Score" />
                                     <input type="hidden" name="ShowResult" value="false" />
                                     <input type="hidden" name="IsComplete" value="false" />
+                                    <input type="hidden" name="SelectedEmbeddingModel" value="@Model.SelectedEmbeddingModel" />
+                                    <input type="hidden" name="SelectedDistanceFunction" value="@Model.SelectedDistanceFunction" />
                                     <button type="submit" class="btn btn-primary btn-lg">
                                         @(Model.CurrentQuestionIndex + 1 < Model.TotalQuestions ? "Следующий вопрос" : "Завершить викторину")
                                     </button>
@@ -125,15 +130,16 @@
                     else
                     {
                         <!-- Текущий вопрос -->
-                        <form method="post">
-                            <div>
-                                <h3 class="mb-4">Вопрос @(Model.CurrentQuestionIndex + 1) из @Model.TotalQuestions</h3>
-                                <div class="mb-4">
-                                    <p class="lead">@(Model.CurrentQuestion?.Text ?? "Вопрос недоступен")</p>
-                                    <p class="text-muted small">Совет: Не беспокойтесь о точном совпадении формулировок. Система оценивает смысл вашего ответа.</p>
+                        <form method="post" asp-page-handler="">
+                        <div>
+                            <h3 class="mb-4">Вопрос @(Model.CurrentQuestionIndex + 1) из @Model.TotalQuestions</h3>
+                            <div class="mb-4">
+                                <p class="lead">@(Model.CurrentQuestion?.Text ?? "Вопрос недоступен")</p>
+                                <p class="text-muted small">Совет: Не беспокойтесь о точном совпадении формулировок. Система оценивает смысл вашего ответа.</p>
                                 
-                                    <!-- Выбор модели эмбеддингов -->
-                                    <div class="mt-3 p-3 bg-light rounded">
+                                <!-- Выбор модели эмбеддингов и функции расстояния -->
+                                <div class="mt-3 p-3 bg-light rounded">
+                                    <div class="mb-3">
                                         <label class="form-label fw-bold">Модель для анализа ответа:</label>
                                         <select class="form-select" name="SelectedEmbeddingModel" id="embeddingModelSelect">
                                             @foreach (var model in Model.AvailableEmbeddingModels)
@@ -143,13 +149,30 @@
                                                 </option>
                                             }
                                         </select>
-                                        <p class="text-muted small mt-2 mb-0">
-                                            <small>Выберите модель для сравнения вашего ответа с правильным. Разные модели могут давать разные результаты.</small>
-                                        </p>
                                     </div>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label fw-bold">Функция расстояния:</label>
+                                        <select class="form-select" name="SelectedDistanceFunction" id="distanceFunctionSelect">
+                                            @foreach (var func in Model.AvailableDistanceFunctions)
+                                            {
+                                                <option value="@func.Value" selected="@(func.Value == Model.SelectedDistanceFunction)">
+                                                    @func.Text
+                                                </option>
+                                            }
+                                        </select>
+                                    </div>
+                                    
+                                    <p class="text-muted small mt-2 mb-0">
+                                        <small>Выберите модель для сравнения вашего ответа с правильным и функцию для расчета расстояния между векторами.</small>
+                                    </p>
                                 </div>
+                            </div>
+
                                 <input type="hidden" name="CurrentQuestionIndex" value="@Model.CurrentQuestionIndex" />
                                 <input type="hidden" name="Score" value="@Model.Score" />
+                                <input type="hidden" name="ShowResult" value="false" />
+                                <input type="hidden" name="IsComplete" value="false" />
 
                                 <div class="mb-3">
                                     <label for="userAnswer" class="form-label">Ваш ответ:</label>
@@ -157,8 +180,8 @@
                                 </div>
 
                                 <button type="submit" class="btn btn-primary btn-lg w-100">Проверить ответ</button>
-                            </div>
-                        </form>
+                        </div>
+                     </form>
                     }
                 </div>
             </div>
@@ -184,8 +207,10 @@
                 });
             }
 
-            // Обновляем описание модели при выборе
+            // Обновляем описание модели и функции при выборе
             const modelSelect = document.getElementById('embeddingModelSelect');
+            const functionSelect = document.getElementById('distanceFunctionSelect');
+            
             if (modelSelect) {
                 modelSelect.addEventListener('change', function() {
                     let description = '';
@@ -202,8 +227,27 @@
                         default:
                             description = 'Выберите модель для анализа вашего ответа.';
                     }
-                    // Это просто для UX, не отправляет запрос на сервер
                     console.log('Выбрана модель:', this.value);
+                });
+            }
+            
+            if (functionSelect) {
+                functionSelect.addEventListener('change', function() {
+                    let description = '';
+                    switch(this.value) {
+                        case 'cosine':
+                            description = 'Измеряет угол между векторами. Лучше всего подходит для семантического сходства текстов.';
+                            break;
+                        case 'l2':
+                            description = 'Евклидово расстояние. Чувствительно к абсолютным различиям в векторах.';
+                            break;
+                        case 'inner_product':
+                            description = 'Скалярное произведение. Может быть полезно для определенных типов данных.';
+                            break;
+                        default:
+                            description = 'Выберите функцию для расчета расстояния между эмбеддингами.';
+                    }
+                    console.log('Выбрана функция расстояния:', this.value);
                 });
             }
         });

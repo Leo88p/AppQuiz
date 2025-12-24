@@ -55,6 +55,16 @@ namespace AppQuiz.Pages
         private readonly ILogger<QuizModel> _logger;
         private readonly OllamaService _ollamaService;
 
+        [BindProperty]
+        public string SelectedDistanceFunction { get; set; } = "cosine";
+
+        public List<SelectListItem> AvailableDistanceFunctions { get; } = new List<SelectListItem>
+        {
+            new SelectListItem { Value = "cosine", Text = "Косинусное расстояние" },
+            new SelectListItem { Value = "l2", Text = "Евклидово расстояние (L2)" },
+            new SelectListItem { Value = "inner_product", Text = "Скалярное произведение" }
+        };
+
         public QuizModel(ApplicationDbContext context, ILogger<QuizModel> logger, OllamaService ollamaService)
         {
             _context = context;
@@ -172,6 +182,11 @@ namespace AppQuiz.Pages
                 {
                     SelectedEmbeddingModel = savedModel;
                 }
+                var savedDistanceFunction = HttpContext.Session.GetString("SelectedDistanceFunction");
+                if (!string.IsNullOrEmpty(savedDistanceFunction) && AvailableDistanceFunctions.Any(m => m.Value == savedDistanceFunction))
+                {
+                    SelectedDistanceFunction = savedDistanceFunction;
+                }
 
                 if (IsComplete || CurrentQuestionIndex >= _questionIds.Count)
                 {
@@ -263,18 +278,20 @@ namespace AppQuiz.Pages
                 var correctAnswer = CurrentQuestion.Answer?.Trim() ?? string.Empty;
 
                 _logger.LogInformation($"Пользователь ответил: '{userAnswer}', правильный ответ: '{correctAnswer}'");
-                _logger.LogInformation($"Выбранная модель эмбеддингов: {SelectedEmbeddingModel}");
+                _logger.LogInformation($"Выбранная модель эмбеддингов: {SelectedEmbeddingModel}, функция расстояния: {SelectedDistanceFunction}");
 
                 try
                 {
-                    float[] userEmbedding;
-                    float[] correctEmbedding = Array.Empty<float>();
+                    // Получаем эмбеддинг пользователя на лету
+                    var userEmbedding = await _ollamaService.GetEmbeddingAsync(userAnswer, SelectedEmbeddingModel);
+
+                    if (userEmbedding.Length == 0)
+                    {
+                        throw new Exception("Не удалось получить эмбеддинг для ответа пользователя");
+                    }
+
+                    // Получаем предварительно сохраненный эмбеддинг правильного ответа из базы данных
                     Vector? storedCorrectEmbedding = null;
-
-                    // Получаем эмбеддинг пользователя
-                    userEmbedding = await _ollamaService.GetEmbeddingAsync(userAnswer, SelectedEmbeddingModel);
-
-                    // Получаем предварительно сохраненный эмбеддинг правильного ответа
                     switch (SelectedEmbeddingModel)
                     {
                         case "nomic-embed-text":
@@ -291,29 +308,74 @@ namespace AppQuiz.Pages
                             break;
                     }
 
-                    if (storedCorrectEmbedding != null && storedCorrectEmbedding.ToArray().Length > 0)
+                    if (storedCorrectEmbedding == null || storedCorrectEmbedding.ToArray().Length == 0)
                     {
-                        correctEmbedding = storedCorrectEmbedding.ToArray();
-                        _logger.LogInformation($"Использован предварительно рассчитанный эмбеддинг для модели {SelectedEmbeddingModel}");
-                    }
-                    else
-                    {
-                        // Если эмбеддинг не сохранен, генерируем его на лету
-                        correctEmbedding = await _ollamaService.GetEmbeddingAsync(correctAnswer, SelectedEmbeddingModel);
-                        _logger.LogWarning($"Эмбеддинг для вопроса {CurrentQuestion.Id} не найден, сгенерирован на лету");
+                        // Если эмбеддинг не сохранен в базе, генерируем его на лету (резервный вариант)
+                        _logger.LogWarning($"Предварительно рассчитанный эмбеддинг для вопроса {CurrentQuestion.Id} не найден, генерируем на лету");
+                        var correctEmbedding = await _ollamaService.GetEmbeddingAsync(correctAnswer, SelectedEmbeddingModel);
+                        storedCorrectEmbedding = new Vector(correctEmbedding);
                     }
 
-                    if (userEmbedding.Length == 0 || correctEmbedding.Length == 0)
+                    var correctEmbeddingArray = storedCorrectEmbedding.ToArray();
+
+                    _logger.LogInformation($"Используется предварительно рассчитанный эмбеддинг для правильного ответа");
+
+                    // Вычисляем расстояние/сходство в зависимости от выбранной функции
+                    double similarityScore = 0.0;
+                    double distance = 0.0;
+
+                    switch (SelectedDistanceFunction.ToLower())
                     {
-                        throw new Exception("Не удалось получить эмбеддинги для одного или обоих ответов");
+                        case "cosine":
+                            similarityScore = OllamaService.CalculateCosineSimilarity(userEmbedding, correctEmbeddingArray);
+                            _logger.LogInformation($"Косинусное сходство: {similarityScore:P2}");
+                            break;
+
+                        case "l2":
+                            distance = OllamaService.CalculateL2Distance(userEmbedding, correctEmbeddingArray);
+                            similarityScore = 1.0 - distance; // Нормализуем для отображения
+                            _logger.LogInformation($"Евклидово расстояние: {distance:F4}, нормализованное сходство: {similarityScore:P2}");
+                            break;
+
+                        case "inner_product":
+                            similarityScore = OllamaService.CalculateInnerProduct(userEmbedding, correctEmbeddingArray);
+                            // Нормализуем скалярное произведение для отображения в процентах
+                            double maxPossible = Math.Sqrt(
+                                userEmbedding.Select(x => x * x).Sum() *
+                                correctEmbeddingArray.Select(x => x * x).Sum()
+                            );
+                            similarityScore = maxPossible > 0 ? similarityScore / maxPossible : 0.0;
+                            _logger.LogInformation($"Скалярное произведение: {similarityScore:P2} (нормализованное)");
+                            break;
+
+                        default:
+                            similarityScore = OllamaService.CalculateCosineSimilarity(userEmbedding, correctEmbeddingArray);
+                            _logger.LogInformation($"Косинусное сходство (по умолчанию): {similarityScore:P2}");
+                            break;
                     }
 
-                    // Вычисляем сходство
-                    SimilarityScore = CalculateCosineSimilarity(userEmbedding, correctEmbedding);
-                    _logger.LogInformation($"Сходство ответов с моделью {SelectedEmbeddingModel}: {SimilarityScore:P2}");
+                    SimilarityScore = similarityScore;
 
-                    // Определяем правильность ответа
-                    IsCorrect = SimilarityScore >= 0.75;
+                    // Определяем правильность ответа с адаптивными порогами
+                    bool isThresholdMet;
+                    switch (SelectedDistanceFunction.ToLower())
+                    {
+                        case "l2":
+                            // Для L2: чем меньше расстояние, тем лучше. Используем порог расстояния 0.5
+                            isThresholdMet = distance <= 0.5;
+                            break;
+
+                        case "inner_product":
+                            // Для скалярного произведения используем нормализованный порог
+                            isThresholdMet = similarityScore >= 0.7;
+                            break;
+
+                        default: // cosine
+                            isThresholdMet = similarityScore >= 0.75;
+                            break;
+                    }
+
+                    IsCorrect = isThresholdMet;
 
                     // Проверяем, был ли этот вопрос уже правильно отвечен
                     var questionKey = $"Question_{CurrentQuestionIndex}_AnsweredCorrectly";
@@ -367,6 +429,7 @@ namespace AppQuiz.Pages
                 // Сохраняем обновленный счет в сессии
                 HttpContext.Session.SetInt32("Score", Score);
                 HttpContext.Session.SetString("SelectedEmbeddingModel", SelectedEmbeddingModel);
+                HttpContext.Session.SetString("SelectedDistanceFunction", SelectedDistanceFunction);
 
                 // ВСЕГДА сохраняем правильный ответ для отображения
                 CorrectAnswer = correctAnswer;
@@ -580,35 +643,6 @@ namespace AppQuiz.Pages
                 TempData["ErrorMessage"] = $"Произошла ошибка при повторе вопроса: {ex.Message}";
                 return RedirectToPage("/Error");
             }
-        }
-        private float CalculateCosineSimilarity(float[] vec1, float[] vec2)
-        {
-            if (vec1.Length != vec2.Length || vec1.Length == 0)
-            {
-                _logger.LogWarning($"Несовместимые векторы: vec1.Length={vec1.Length}, vec2.Length={vec2.Length}");
-                return 0f;
-            }
-
-            float dotProduct = 0f;
-            float norm1 = 0f;
-            float norm2 = 0f;
-
-            for (int i = 0; i < vec1.Length; i++)
-            {
-                dotProduct += vec1[i] * vec2[i];
-                norm1 += vec1[i] * vec1[i];
-                norm2 += vec2[i] * vec2[i];
-            }
-
-            if (norm1 == 0 || norm2 == 0)
-            {
-                _logger.LogWarning($"Нулевая норма: norm1={norm1}, norm2={norm2}");
-                return 0f;
-            }
-
-            var similarity = dotProduct / (float)(Math.Sqrt(norm1) * Math.Sqrt(norm2));
-            _logger.LogDebug($"Рассчитанное сходство: {similarity}");
-            return similarity;
         }
     }
 }
